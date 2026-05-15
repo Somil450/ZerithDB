@@ -193,6 +193,15 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
       if ("$lte" in ops && !((fieldValue as any) <= (ops["$lte"] as never))) return false;
       if ("$in" in ops && !(ops["$in"] as unknown[]).includes(fieldValue)) return false;
       if ("$nin" in ops && (ops["$nin"] as unknown[]).includes(fieldValue)) return false;
+      if ("$exists" in ops) {
+        const exists = key in doc;
+        if (exists !== ops["$exists"]) return false;
+      }
+      if ("$regex" in ops) {
+        const pattern = ops["$regex"];
+        const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
+        if (!regex.test(String(fieldValue))) return false;
+      }
     }
     return true;
   }
