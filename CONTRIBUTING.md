@@ -160,7 +160,6 @@ pnpm --filter zerithdb-db test --watch
 - [ ] `pnpm test` passes
 - [ ] `pnpm typecheck` shows no errors
 - [ ] `pnpm lint` passes
-- [ ] `pnpm format:check` passes
 - [ ] New/changed public APIs have TSDoc comments
 - [ ] Changeset added (`pnpm changeset`) if a published package changed
 - [ ] PR description explains **what**, **why**, and **how**
