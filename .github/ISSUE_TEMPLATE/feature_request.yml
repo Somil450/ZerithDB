@@ -34,6 +34,29 @@ body:
         It should behave like... and accept the following parameters...
     validations:
       required: true
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: 🎯 Use Cases
+      description: How would a developer use this feature?
+      placeholder: |
+        Use case 1: ...
+        Use case 2: ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: api-design
+    attributes:
+      label: 🛠️ API Design (if applicable)
+      description: What would the ideal API look like?
+      placeholder: |
+        ```typescript
+        // example code
+        ```
+    validations:
+      required: false
  
   - type: textarea
     id: alternatives-considered
