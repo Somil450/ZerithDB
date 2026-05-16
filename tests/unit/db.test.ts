@@ -11,7 +11,10 @@ describe("DbClient — CollectionClient", () => {
   let db: DbClient;
 
   beforeEach(() => {
-    db = new DbClient(testConfig);
+    const uniqueConfig = {
+      appId: "test-db-" + Math.random().toString(36).slice(2),
+    };
+    db = new DbClient(uniqueConfig);
   });
 
   afterEach(async () => {
@@ -155,8 +158,10 @@ describe("DbClient — CollectionClient", () => {
 
     it("should not clear other collections", async () => {
       const tasks = db.collection<{ done: boolean }>("tasks");
-      const notes = db.collection<{ text: string }>("notes");
+      // Ensure first collection is ready before creating second one
       await tasks.insertMany([{ done: true }, { done: false }]);
+      
+      const notes = db.collection<{ text: string }>("notes");
       await notes.insert({ text: "keep me" });
 
       await tasks.clearAll();

@@ -11,7 +11,10 @@ describe("DbClient — Operators ($exists, $regex)", () => {
   let db: DbClient;
 
   beforeEach(() => {
-    db = new DbClient(testConfig);
+    const uniqueConfig = {
+      appId: "test-ops-" + Math.random().toString(36).slice(2),
+    };
+    db = new DbClient(uniqueConfig);
   });
 
   afterEach(async () => {
@@ -75,6 +78,25 @@ describe("DbClient — Operators ($exists, $regex)", () => {
       const matches = await col.find({ name: { $regex: "^Zerith" } });
       expect(matches).toHaveLength(1);
       expect(matches[0]?.name).toBe("ZerithDB");
+    });
+
+    it("should support direct RegExp objects", async () => {
+      const col = db.collection<{ name: string }>("users");
+      await col.insert({ name: "ZerithDB" });
+      await col.insert({ name: "MongoDB" });
+
+      const matches = await col.find({ name: /zerith/i });
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.name).toBe("ZerithDB");
+    });
+
+    it("should NOT match non-string values with $regex", async () => {
+      const col = db.collection<{ age: number }>("users");
+      await col.insert({ age: 30 } as any);
+
+      // Even if the string representation matches, $regex should only match strings
+      const matches = await col.find({ age: { $regex: "30" } } as any);
+      expect(matches).toHaveLength(0);
     });
   });
 });

@@ -18,6 +18,7 @@ export type Document<T extends Record<string, any> = Record<string, any>> = T & 
 export type QueryFilter<T extends Record<string, any>> = {
   [K in keyof T]?:
     | T[K]
+    | (T[K] extends string ? RegExp : never)
     | { $eq: T[K] }
     | { $ne: T[K] }
     | { $gt: T[K] }

@@ -184,6 +184,13 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         continue;
       }
 
+      // Support RegExp directly
+      if (condition instanceof RegExp) {
+        if (typeof fieldValue !== "string") return false;
+        if (!condition.test(fieldValue)) return false;
+        continue;
+      }
+
       const ops = condition as Record<string, any>;
       if ("$eq" in ops && fieldValue !== ops["$eq"]) return false;
       if ("$ne" in ops && fieldValue === ops["$ne"]) return false;
@@ -200,7 +207,7 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
       if ("$regex" in ops) {
         const pattern = ops["$regex"];
         const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
-        if (!regex.test(String(fieldValue))) return false;
+        if (typeof fieldValue !== "string" || !regex.test(fieldValue)) return false;
       }
     }
     return true;
