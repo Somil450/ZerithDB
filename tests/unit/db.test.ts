@@ -3,22 +3,30 @@ import "fake-indexeddb/auto";
 import { DbClient } from "../../packages/db/src/db-client.js";
 import type { ZerithDBConfig } from "../../packages/core/src/index.js";
 
-const testConfig: ZerithDBConfig = {
-  appId: "test-db-" + Math.random().toString(36).slice(2),
-};
-
 describe("DbClient — CollectionClient", () => {
   let db: DbClient;
+  let currentAppId: string;
 
   beforeEach(() => {
+
     const uniqueConfig = {
       appId: "test-db-" + Math.random().toString(36).slice(2),
     };
     db = new DbClient(uniqueConfig);
+
+    currentAppId = "test-db-" + Math.random().toString(36).slice(2);
+    db = new DbClient({ appId: currentAppId });
+
   });
 
   afterEach(async () => {
     await db.dispose();
+    const req = indexedDB.deleteDatabase(`zerithdb_${currentAppId}`);
+    await new Promise<void>((resolve) => {
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+      req.onblocked = () => resolve();
+    });
   });
 
   describe("insert()", () => {
@@ -132,6 +140,19 @@ describe("DbClient — CollectionClient", () => {
       const after = (await col.findById(id))?._updatedAt ?? 0;
       expect(after).toBeGreaterThanOrEqual(before);
     });
+
+    it("should unset matching document fields", async () => {
+      const col = db.collection<{ text: string; note?: string }>("todos");
+      const { id } = await col.insert({ text: "fix bug", note: "remove me" });
+
+      const count = await col.update({ text: "fix bug" }, { $unset: { note: true } });
+
+      const doc = await col.findById(id);
+      expect(count).toBe(1);
+      expect(doc).toBeDefined();
+      expect(doc).not.toHaveProperty("note");
+      expect(doc?.text).toBe("fix bug");
+    });
   });
 
   describe("delete()", () => {
@@ -168,6 +189,8 @@ describe("DbClient — CollectionClient", () => {
 
       expect(await tasks.count()).toBe(0);
       expect(await notes.count()).toBe(1);
+
+      await db2.dispose();
     });
   });
 

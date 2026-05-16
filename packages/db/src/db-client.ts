@@ -116,13 +116,7 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
       const matches = await this.find(filter);
       const now = Date.now();
 
-      await this.table.bulkPut(
-        matches.map((doc) => ({
-          ...doc,
-          ...(spec.$set ?? {}),
-          _updatedAt: now,
-        }))
-      );
+      await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
 
       return matches.length;
     } catch (err) {
@@ -167,12 +161,35 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     }
   }
 
+  /** Alias for {@link clearAll} */
+  async clear(): Promise<void> {
+    return this.clearAll();
+  }
+
   /**
    * Count documents matching a filter.
    */
   async count(filter: QueryFilter<T> = {}): Promise<number> {
     const docs = await this.find(filter);
     return docs.length;
+  }
+
+  private applyUpdateSpec(doc: Document<T>, spec: UpdateSpec<T>, updatedAt: number): Document<T> {
+    const next = {
+      ...doc,
+      ...(spec.$set ?? {}),
+      _updatedAt: updatedAt,
+    } as Record<string, any>;
+
+    for (const key of Object.keys(spec.$unset ?? {})) {
+      delete next[key];
+    }
+
+    next._id = doc._id;
+    next._createdAt = doc._createdAt;
+    next._updatedAt = updatedAt;
+
+    return next as Document<T>;
   }
 
   private matchesFilter(doc: Document<T>, filter: QueryFilter<T>): boolean {
@@ -183,6 +200,7 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         if (fieldValue !== condition) return false;
         continue;
       }
+
 
       // Support RegExp directly
       if (condition instanceof RegExp) {
@@ -209,28 +227,65 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
         if (typeof fieldValue !== "string" || !regex.test(fieldValue)) return false;
       }
+
+      // Distinguish operator objects ({ $gt: 3 }) from plain object values ({ key: "v" }).
+      // Only treat as operators if at least one key starts with "$".
+      const conditions = condition as Record<string, any>;
+      const isOperatorObject = Object.keys(conditions).some((k) => k.startsWith("$"));
+
+      if (!isOperatorObject) {
+        // Deep equality check for plain object / array values
+        if (JSON.stringify(fieldValue) !== JSON.stringify(condition)) return false;
+        continue;
+      }
+
+      if ("$eq" in conditions && fieldValue !== conditions["$eq"]) return false;
+      if ("$ne" in conditions && fieldValue === conditions["$ne"]) return false;
+      if ("$gt" in conditions && !((fieldValue as any) > (conditions["$gt"] as never))) return false;
+      if ("$gte" in conditions && !((fieldValue as any) >= (conditions["$gte"] as never))) return false;
+      if ("$lt" in conditions && !((fieldValue as any) < (conditions["$lt"] as never))) return false;
+      if ("$lte" in conditions && !((fieldValue as any) <= (conditions["$lte"] as never))) return false;
+      if ("$in" in conditions && !(conditions["$in"] as unknown[]).includes(fieldValue)) return false;
+      if ("$nin" in conditions && (conditions["$nin"] as unknown[]).includes(fieldValue)) return false;
+
     }
     return true;
   }
 }
 
+/**
+ * Internal Dexie subclass that manages dynamic collection creation.
+ * Collections are added lazily via schema version upgrades.
+ */
 class ZerithDBDexie extends Dexie {
   private readonly tableMap = new Map<string, Table>();
+  private _currentSchema: Record<string, string> = {};
+  private _pendingVersion = 0;
 
   constructor(appId: string) {
     super(`zerithdb_${appId}`);
   }
 
+  /**
+   * Ensure a named collection exists, creating it via a Dexie version
+   * upgrade if it has not been registered yet.
+   *
+   * @param name - The collection name to create or retrieve
+   * @returns The Dexie {@link Table} handle for the collection
+   */
   ensureCollection(name: string): Table {
     if (!this.tableMap.has(name)) {
-      // Dexie requires version upgrade to add tables — we use a dynamic schema pattern
-      const version = (this.verno ?? 0) + 1;
-      const existingTableNames = this.tableMap.keys();
-      const schema: Record<string, string> = { [name]: "_id, _createdAt, _updatedAt" };
-      for (const existingName of existingTableNames) {
-        schema[existingName] = "_id, _createdAt, _updatedAt";
+      this._currentSchema[name] = "_id, _createdAt, _updatedAt";
+      
+      // We must increment the version for every new collection added dynamically
+      const nextVersion = Math.max(this.verno, this._pendingVersion) + 1;
+      this._pendingVersion = nextVersion;
+
+      if (this.isOpen()) {
+        this.close();
       }
-      this.version(version).stores(schema);
+
+      this.version(nextVersion).stores(this._currentSchema);
       this.tableMap.set(name, this.table(name));
     }
     // biome-ignore lint: map guarantees this is defined
@@ -257,6 +312,22 @@ export class DbClient {
       this.collections.set(name, new CollectionClient<T>(table as Table<Document<T>>, name));
     }
     return this.collections.get(name) as CollectionClient<T>;
+  }
+
+  /**
+   * Returns per-collection document counts for DevTools memory reporting.
+   */
+  async getMemoryStats(): Promise<{ recordCount: number; collections: Record<string, number> }> {
+    const collections: Record<string, number> = {};
+    let recordCount = 0;
+
+    for (const [name, client] of this.collections) {
+      const count = await client.count();
+      collections[name] = count;
+      recordCount += count;
+    }
+
+    return { recordCount, collections };
   }
 
   async dispose(): Promise<void> {
