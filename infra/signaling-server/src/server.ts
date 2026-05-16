@@ -3,6 +3,35 @@ import { createServer } from "http";
 
 const PORT = parseInt(process.env["PORT"] ?? "4000", 10);
 const HOST = process.env["HOST"] ?? "0.0.0.0";
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+const LOG_LEVEL = (process.env["LOG_LEVEL"] ?? "info") as LogLevel;
+const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+const shouldLog = (level: LogLevel): boolean => {
+  return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[LOG_LEVEL];
+};
+const logger = {
+  debug: (...args: unknown[]) => {
+    if (shouldLog("debug")) console.debug(...args);
+  },
+
+  info: (...args: unknown[]) => {
+    if (shouldLog("info")) console.info(...args);
+  },
+
+  warn: (...args: unknown[]) => {
+    if (shouldLog("warn")) console.warn(...args);
+  },
+
+  error: (...args: unknown[]) => {
+    if (shouldLog("error")) console.error(...args);
+  },
+};
 
 // roomId → Set of { peerId, ws }
 const rooms = new Map<string, Set<{ peerId: string; ws: WebSocket }>>();
@@ -28,7 +57,7 @@ wss.on("connection", (ws, req) => {
   const peerId = url.searchParams.get("peer");
 
   if (!roomId || !peerId) {
-    console.log(`[!] Rejected connection from ${req.socket.remoteAddress}: missing params`);
+    logger.warn(`[!] Rejected connection from ${req.socket.remoteAddress}: missing params`);
     ws.close(1008, "Missing room or peer query parameters");
     return;
   }
@@ -43,7 +72,7 @@ wss.on("connection", (ws, req) => {
   const peerEntry = { peerId, ws };
   room.add(peerEntry);
 
-  console.log(`[+] peer=${peerId} joined room=${roomId} (room size: ${room.size})`);
+  logger.info(`[+] peer=${peerId} joined room=${roomId} (room size: ${room.size})`);
 
   // Send the new peer the list of existing peers
   const existingPeerIds = [...room].filter((p) => p.peerId !== peerId).map((p) => p.peerId);
@@ -82,8 +111,7 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     room.delete(peerEntry);
-    console.log(`[-] peer=${peerId} left room=${roomId} (room size: ${room.size})`);
-
+    logger.info(`[-] peer=${peerId} left room=${roomId} (room size: ${room.size})`);
     // Clean up empty rooms
     if (room.size === 0) {
       rooms.delete(roomId);
@@ -99,18 +127,18 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("error", (err) => {
-    console.error(`[!] peer=${peerId} error:`, err.message);
+    logger.error(`[!] peer=${peerId} error:`, err.message);
     room.delete(peerEntry);
   });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`🚀 ZerithDB Signaling Server running at ws://${HOST}:${PORT}`);
-  console.log(`   HTTP health check: http://${HOST}:${PORT}`);
+  logger.info(`🚀 ZerithDB Signaling Server running at ws://${HOST}:${PORT}`);
+  logger.info(`   HTTP health check: http://${HOST}:${PORT}`);
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
-  console.log("Shutting down signaling server...");
+  logger.info("Shutting down signaling server...");
   wss.close(() => server.close(() => process.exit(0)));
 });
