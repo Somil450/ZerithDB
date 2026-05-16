@@ -8,6 +8,7 @@ import type {
   UpdateSpec,
 } from "zerithdb-core";
 import { ZerithDBError, ErrorCode } from "zerithdb-core";
+import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
 
 /**
  * A handle to a single named collection within the ZerithDB local database.
@@ -266,10 +267,12 @@ class ZerithDBDexie extends Dexie {
  */
 export class DbClient {
   private readonly dexie: ZerithDBDexie;
+  private readonly appId: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly collections = new Map<string, CollectionClient<any>>();
 
   constructor(config: ZerithDBConfig) {
+    this.appId = config.appId;
     this.dexie = new ZerithDBDexie(config.appId);
   }
 
@@ -284,6 +287,22 @@ export class DbClient {
   /**
    * Returns per-collection document counts for DevTools memory reporting.
    */
+  async exportSnapshot(options: BackupExportOptions = {}): Promise<BackupSnapshot> {
+    const collectionNames = options.collections ?? Array.from(this.collections.keys());
+    const collections: BackupSnapshot["collections"] = {};
+
+    for (const name of collectionNames) {
+      collections[name] = await this.collection(name).find();
+    }
+
+    return {
+      format: "zerithdb.local-backup.v1",
+      appId: this.appId,
+      generatedAt: new Date().toISOString(),
+      collections,
+    };
+  }
+
   async getMemoryStats(): Promise<{ recordCount: number; collections: Record<string, number> }> {
     const collections: Record<string, number> = {};
     let recordCount = 0;

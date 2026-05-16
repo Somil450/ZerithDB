@@ -18,8 +18,17 @@ import { motion } from "framer-motion";
 import CodeWalkthrough from "@/components/CodeWalkthrough";
 import TerminalShowcase from "@/components/TerminalShowcase";
 import AnimatedDiagram from "@/components/AnimatedDiagram";
+import dynamic from "next/dynamic";
 import FrameworkSection from "@/components/FrameworkSection";
-import HomePlayground from "@/components/HomePlayground";
+
+const HomePlayground = dynamic(() => import("@/components/HomePlayground"), {
+  ssr: false,
+  loading: () => (
+    <section id="playground" className="py-24 px-6 border-y border-border">
+      <div className="max-w-6xl mx-auto h-96 rounded-2xl bg-muted animate-pulse" aria-hidden />
+    </section>
+  ),
+});
 
 export default function LandingPage() {
   const fadeInUp = {

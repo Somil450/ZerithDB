@@ -36,8 +36,8 @@ function ClientPanel({
     <motion.div
       animate={highlight ? { scale: [1, 1.01, 1] } : { scale: 1 }}
       transition={{ duration: 0.35 }}
-      className={`rounded-2xl border overflow-hidden flex flex-col h-[280px] bg-white shadow-lg ${
-        highlight ? "border-blue-300 ring-2 ring-blue-100" : "border-gray-200"
+      className={`rounded-2xl border overflow-hidden flex flex-col h-[280px] bg-card shadow-lg ${
+        highlight ? "border-blue-300 ring-2 ring-blue-100 dark:ring-blue-900" : "border-border"
       }`}
     >
       <motion.div className="bg-gray-900 px-4 py-2.5 flex items-center justify-between border-b border-gray-800">
@@ -130,24 +130,18 @@ export default function HomePlayground() {
   return (
     <section
       id="playground"
-      className="py-24 px-6 bg-gradient-to-b from-blue-50/40 to-white border-y border-gray-100"
+      className="py-24 px-6 bg-gradient-to-b from-blue-50/40 to-background dark:from-blue-950/20 border-y border-border"
     >
-      <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true }}
-        transition={{ duration: 0.6 }}
-        className="max-w-6xl mx-auto"
-      >
+      <div className="max-w-6xl mx-auto">
         <div className="mb-10 md:text-center max-w-3xl mx-auto">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold uppercase tracking-wider mb-4">
             <Zap className="w-3.5 h-3.5" />
             Live on the homepage
           </div>
-          <h2 className="text-3xl md:text-4xl font-bold tracking-tight text-gray-900">
+          <h2 className="text-3xl md:text-4xl font-bold tracking-tight text-foreground">
             Interactive Playground
           </h2>
-          <p className="mt-4 text-lg text-gray-500">
+          <p className="mt-4 text-lg text-muted-foreground">
             Write ZerithDB-style queries in the editor, run them locally, and watch peer-to-peer sync
             merge state in real time—no backend required.
           </p>
@@ -185,7 +179,7 @@ export default function HomePlayground() {
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-[#161B22] border-t border-gray-800">
               <p className="text-xs text-gray-500">
                 Try <code className="text-gray-400">insert</code> or{" "}
-                <code className="text-gray-400">find()</code>
+                <code className="text-gray-400">{"find()"}</code>
               </p>
               <button
                 type="button"
@@ -202,7 +196,7 @@ export default function HomePlayground() {
             </pre>
           </div>
 
-          <motion.div className="space-y-4">
+          <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
               <div
                 className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full ${
@@ -266,7 +260,7 @@ export default function HomePlayground() {
               />
             </div>
 
-            <p className="text-sm text-gray-500 leading-relaxed">
+            <p className="text-sm text-muted-foreground leading-relaxed">
               Edits on Client A propagate to Client B when the network is online. Toggle offline to
               queue changes, then reconnect to see CRDT merge in action.
             </p>
@@ -278,9 +272,9 @@ export default function HomePlayground() {
               Open full playground
               <ArrowRight className="w-4 h-4" />
             </Link>
-          </motion.div>
+          </div>
         </div>
-      </motion.div>
+      </div>
     </section>
   );
 }

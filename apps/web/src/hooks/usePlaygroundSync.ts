@@ -18,29 +18,34 @@ export function usePlaygroundSync(initialNote: PlaygroundNote = INITIAL_NOTE) {
   const [clientB, setClientB] = useState<PlaygroundNote[]>([initialNote]);
   const [syncCount, setSyncCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [peerStatus, setPeerStatus] = useState<"connecting" | "connected" | "offline">(
-    "connecting"
-  );
+  const [isPeerConnected, setIsPeerConnected] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsLoading(false);
-      setPeerStatus("connected");
+      setIsPeerConnected(true);
     }, 800);
     return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
     if (!isOnline) {
-      setPeerStatus("offline"); // eslint-disable-line react-hooks/set-state-in-effect
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- simulate peer disconnect immediately
+      setIsPeerConnected(false);
       return;
     }
 
-    setPeerStatus("connecting");
-    const timer = setTimeout(() => setPeerStatus("connected"), 600);
+    setIsPeerConnected(false);
+    const timer = setTimeout(() => setIsPeerConnected(true), 600);
     return () => clearTimeout(timer);
   }, [isOnline]);
+
+  const peerStatus = !isOnline
+    ? "offline"
+    : isLoading || !isPeerConnected
+      ? "connecting"
+      : "connected";
 
   useEffect(() => {
     if (!isOnline) return;
