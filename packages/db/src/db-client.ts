@@ -194,8 +194,22 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Count documents matching a filter.
    */
   async count(filter: QueryFilter<T> = {}): Promise<number> {
-    const docs = await this.find(filter);
-    return docs.length;
+    return wrapIDBOperation(
+      ErrorCode.DB_READ_FAILED,
+      `Failed to count documents in "${this.collectionName}"`,
+      async () => {
+        const compiledFilter = this.precompileRegexes(filter);
+        let total = 0;
+
+        await this.table.each((doc) => {
+          if (this.matchesFilter(doc, compiledFilter)) {
+            total++;
+          }
+        });
+
+        return total;
+      }
+    );
   }
 
   private applyUpdateSpec(doc: Document<T>, spec: UpdateSpec<T>, updatedAt: number): Document<T> {
