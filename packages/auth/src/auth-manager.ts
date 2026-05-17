@@ -3,6 +3,7 @@ import { sha512 } from "@noble/hashes/sha2.js";
 import type { ZerithDBConfig, Identity, Signature } from "zerithdb-core";
 import { ZerithDBError, ErrorCode, EventEmitter } from "zerithdb-core";
 import { timingSafeEqual } from "./timing-safe.js";
+import { splitSecret, recoverSecret } from "zerithdb-wasm-crypto";
 
 interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -164,6 +165,43 @@ export class AuthManager extends EventEmitter<AuthEvents> {
         // localStorage may not be available in all environments
       }
       this.emit("identity:change", null);
+    }
+  }
+
+  /**
+   * Generate recovery shards for the current master identity private key using Shamir's Secret Sharing.
+   */
+  async generateRecoveryShards(threshold: number, total: number): Promise<string[]> {
+    if (this.privateKeyBytes === null) {
+      throw new ZerithDBError(
+        ErrorCode.AUTH_KEY_NOT_FOUND,
+        "No identity loaded. Call auth.signIn() first before generating shards."
+      );
+    }
+    return splitSecret(this.privateKeyBytes, threshold, total);
+  }
+
+  /**
+   * Recover and restore the master identity private key using a threshold of base64-encoded shards.
+   */
+  async recoverIdentity(shards: string[]): Promise<Identity> {
+    try {
+      const privateKey = await recoverSecret(shards);
+      const publicKeyBytes = await ed.getPublicKeyAsync(privateKey);
+      
+      const identity = this.buildIdentity(publicKeyBytes);
+      this._identity = identity;
+      this.privateKeyBytes = privateKey;
+
+      this.saveToStorage(privateKey, publicKeyBytes);
+      this.emit("identity:change", identity);
+      return identity;
+    } catch (err) {
+      throw new ZerithDBError(
+        ErrorCode.AUTH_VERIFY_FAILED,
+        "Failed to reconstruct master key from the provided shards. Ensure the shards are correct and meet the required threshold.",
+        { cause: err }
+      );
     }
   }
 
