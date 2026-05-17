@@ -307,7 +307,12 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
     this.transport = transport;
 
     transport.onMessage((data: string) => {
-      this.handleSignalingMessage(JSON.parse(data) as SignalingMessage);
+      try {
+        const parsed = JSON.parse(data) as SignalingMessage;
+        this.handleSignalingMessage(parsed);
+      } catch (err) {
+        console.warn("[ZerithDB] Received malformed signaling message", err);
+      }
     });
 
     transport.onClose(() => {
