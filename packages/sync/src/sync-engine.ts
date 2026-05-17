@@ -6,6 +6,7 @@ import type { DbClient } from "zerithdb-db";
 import type { NetworkManager } from "zerithdb-network";
 import { InboxQueue } from "./queue/InboxQueue.js";
 import { OutboxQueue } from "./queue/OutboxQueue.js";
+import { bytesToBase64, base64ToBytes } from "zerithdb-utils";
 
 type SyncEvents = {
   "state:change": SyncState;
@@ -420,17 +421,3 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function bytesToBase64(bytes: Uint8Array): string {
-  // Process in chunks to avoid call-stack overflow on large payloads
-  const CHUNK_SIZE = 0x2000; // 8 KB
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK_SIZE));
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-}

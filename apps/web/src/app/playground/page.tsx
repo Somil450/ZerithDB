@@ -200,9 +200,7 @@ export default function PlaygroundPage() {
   const [isOnline, setIsOnline] = useState(true);
   const [syncCount, setSyncCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [peerStatus, setPeerStatus] = useState<"connecting" | "connected" | "offline">(
-    "connecting"
-  );
+  const [isPeerConnected, setIsPeerConnected] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastTimeouts = useRef<Set<NodeJS.Timeout>>(new Set());
 
@@ -220,7 +218,7 @@ export default function PlaygroundPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsLoading(false);
-      setPeerStatus("connected");
+      setIsPeerConnected(true);
     }, 1500);
 
     (async () => {
@@ -236,16 +234,23 @@ export default function PlaygroundPage() {
     return () => clearTimeout(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Update peer status when network changes
   useEffect(() => {
     if (!isOnline) {
-      setPeerStatus("offline");
-    } else {
-      setPeerStatus("connecting");
-      const timer = setTimeout(() => setPeerStatus("connected"), 1000);
-      return () => clearTimeout(timer);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- simulate peer disconnect immediately
+      setIsPeerConnected(false);
+      return;
     }
+
+    setIsPeerConnected(false);
+    const timer = setTimeout(() => setIsPeerConnected(true), 1000);
+    return () => clearTimeout(timer);
   }, [isOnline]);
+
+  const peerStatus = !isOnline
+    ? "offline"
+    : isLoading || !isPeerConnected
+      ? "connecting"
+      : "connected";
 
   // Cleanup timeouts on unmount
   useEffect(() => {

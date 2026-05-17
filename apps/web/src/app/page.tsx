@@ -17,6 +17,7 @@ import {
 import { motion } from "framer-motion";
 import dynamic from "next/dynamic";
 import Image from "next/image";
+
 const CodeWalkthrough = dynamic(
   () => import("@/components/CodeWalkthrough"),
   {
@@ -43,7 +44,17 @@ const AnimatedDiagram = dynamic(
     ),
   }
 );
+
 import FrameworkSection from "@/components/FrameworkSection";
+
+const HomePlayground = dynamic(() => import("@/components/HomePlayground"), {
+  ssr: false,
+  loading: () => (
+    <section id="playground" className="py-24 px-6 border-y border-border">
+      <div className="max-w-6xl mx-auto h-96 rounded-2xl bg-muted animate-pulse" aria-hidden />
+    </section>
+  ),
+});
 
 export default function LandingPage() {
   const fadeInUp = {
@@ -75,12 +86,12 @@ export default function LandingPage() {
               className="w-10 h-10 flex items-center justify-center overflow-hidden"
             >
               <Image
-  src="/logo.svg"
-  alt="ZerithDB Logo"
-  width={40}
-  height={40}
-  className="w-full h-full"
-/>
+                src="/logo.svg"
+                alt="ZerithDB Logo"
+                width={40}
+                height={40}
+                className="w-full h-full"
+              />
             </motion.div>
             <span className="font-semibold text-xl tracking-tight">ZerithDB</span>
           </div>
@@ -98,7 +109,7 @@ export default function LandingPage() {
               Compare
             </Link>
             <Link
-              href="/playground"
+              href="#playground"
               className="text-blue-600 font-semibold hover:text-blue-700 transition-colors flex items-center gap-1.5"
             >
               <Zap className="w-4 h-4" /> Playground
@@ -192,7 +203,7 @@ export default function LandingPage() {
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </Link>
           <Link
-            href="/playground"
+            href="#playground"
             className="flex items-center gap-2 bg-blue-50 text-blue-700 border border-blue-100 px-6 py-3.5 rounded-xl font-medium text-base hover:bg-blue-100 transition-all w-full sm:w-auto justify-center shadow-sm"
           >
             <Zap className="w-4 h-4 animate-pulse" />
@@ -277,6 +288,8 @@ export default function LandingPage() {
           </div>
         </motion.div>
       </section>
+
+      <HomePlayground />
 
       {/* ── INTERACTIVE CODE SECTION ── */}
       <section className="py-24 px-6 bg-background border-b border-border transition-colors duration-300">
@@ -519,13 +532,13 @@ export default function LandingPage() {
             </p>
           </motion.div>
 
-            <motion.div
-              initial={{ opacity: 0, scale: 0.98 }}
-              whileInView={{ opacity: 1, scale: 1 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.8 }}
-              className="overflow-x-auto rounded-2xl border border-border shadow-sm transition-colors duration-300 dark:bg-card"
-            >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98 }}
+            whileInView={{ opacity: 1, scale: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.8 }}
+            className="overflow-x-auto rounded-2xl border border-border shadow-sm transition-colors duration-300 dark:bg-card"
+          >
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-muted text-foreground border-b border-border">
