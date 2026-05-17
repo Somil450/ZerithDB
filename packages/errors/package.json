@@ -1,7 +1,7 @@
 {
-  "name": "zerithdb-core",
-  "version": "0.2.0",
-  "description": "Shared types, events, and error primitives for ZerithDB",
+  "name": "zerithdb-errors",
+  "version": "0.1.0",
+  "description": "Shared error primitives for ZerithDB",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -18,26 +18,15 @@
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "lint": "eslint src --ext .ts",
     "clean": "rimraf dist"
   },
   "devDependencies": {
-    "zerithdb-eslint-config": "workspace:*",
-    "zerithdb-tsconfig": "workspace:*",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "eslint": "^8.57.0",
     "rimraf": "^6.0.1",
     "tsup": "^8.2.4",
-    "typescript": "^5.5.4",
-    "vitest": "^2.0.5"
+    "typescript": "^5.5.4"
   },
   "files": [
     "dist",
     "src"
-  ],
-  "dependencies": {
-    "zerithdb-errors": "workspace:*"
-  }
+  ]
 }

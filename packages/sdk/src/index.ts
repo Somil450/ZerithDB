@@ -34,4 +34,4 @@ export type {
   SyncState,
 } from "zerithdb-core";
 
-export { ZerithDBError, ErrorCode } from "zerithdb-core";
+export { ZerithDBError, ErrorCode } from "zerithdb-errors";
