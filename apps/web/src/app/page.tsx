@@ -833,6 +833,7 @@ export default function LandingPage() {
               rel="noopener noreferrer"
               className="hover:text-foreground transition-colors"
             >
+
               Discord
             </a>
           </div>
