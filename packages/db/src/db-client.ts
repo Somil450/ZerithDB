@@ -397,7 +397,10 @@ export class DbClient {
 
   collection<T extends Record<string, any>>(name: string): CollectionClient<T> {
     if (typeof name !== "string" || name.trim() === "") {
-      throw new ZerithDBError(ErrorCode.DB_INIT_FAILED, "Collection name must be a non-empty string");
+      throw new ZerithDBError(
+        ErrorCode.DB_INIT_FAILED,
+        "Collection name must be a non-empty string"
+      );
     }
     if (!this.collections.has(name)) {
       const table = this.dexie.ensureCollection(name);
