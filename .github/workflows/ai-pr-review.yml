@@ -22,9 +22,7 @@ jobs:
     name: Groq AI Review & Label
     runs-on: ubuntu-latest
     # Run if it's an automated PR OR a comment starting with /review on a PR
-    if: >
-      (github.event_name == 'pull_request_target') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+    if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/review')) }}
     steps:
       - name: Fetch PR diff via GitHub API
         run: |
