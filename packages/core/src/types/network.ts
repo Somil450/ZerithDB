@@ -12,6 +12,12 @@ export interface PeerInfo {
   did: string;
   /** Base58-encoded Ed25519 public key of the peer */
   publicKey: string;
+  /** Optional human-readable peer alias */
+  name?: string;
+
+  /** Optional ENS identity */
+  ens?: string;
+
   /** Connection established timestamp in Unix milliseconds */
   connectedAt: number;
 }

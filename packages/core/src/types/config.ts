@@ -75,6 +75,11 @@ export interface NetworkConfig {
    * @default 1000
    */
   reconnectDelay?: number;
+  /** Optional human-readable peer alias */
+  name?: string;
+
+  /** Optional ENS identity */
+  ens?: string;
 }
 
 export interface ZerithDBConfig {

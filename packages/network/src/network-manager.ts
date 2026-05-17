@@ -11,6 +11,8 @@ import type { AuthManager } from "zerithdb-auth";
 import type { SignalingTransport } from "./signaling-transport.js";
 import { WebSocketTransport } from "./transports/websocket-transport.js";
 import { PollingTransport } from "./transports/polling-transport.js";
+import { NameRegistry } from "./name-registry.js";
+import { MockENSResolver } from "./ens-resolver";
 
 export interface WebRtcBufferStats {
   peerCount: number;
@@ -49,6 +51,9 @@ interface SignalingMessage {
   from: string;
   to?: string;
   payload: unknown;
+
+  name?: string; // human-readable alias (alice.zerith)
+  ens?: string; // optional ENS name
 }
 
 const DEFAULT_SIGNALING_URL = "wss://arpitkhandelwal810-zerith-signaling.hf.space";
@@ -72,6 +77,7 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
   private activeTransportType: "websocket" | "polling" | null = null;
   private readonly peers = new Map<PeerId, SimplePeer.Instance>();
   private readonly peerInfo = new Map<PeerId, PeerInfo>();
+  private readonly peerIdentity = new Map<PeerId, { name?: string; ens?: string }>();
   private readonly localStreams = new Map<string, MediaStream>();
   private readonly localStreamMetadata = new Map<string, MediaStreamMetadata>();
   private readonly remoteStreams = new Map<PeerId, Map<string, MediaStream>>();
@@ -81,12 +87,24 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
   private reconnectAttempts = 0;
   private disposed = false;
   private currentUrlIndex = 0;
+  private readonly nameRegistry = new NameRegistry();
+  private ensResolver: MockENSResolver;
 
   constructor(
     private readonly config: ZerithDBConfig,
     private readonly auth: AuthManager
   ) {
     super();
+
+    this.ensResolver = new MockENSResolver();
+  }
+
+  getName(peerId: string) {
+    return this.nameRegistry.entries().find((r) => r.peerId === peerId);
+  }
+
+  resolveName(name: string) {
+    return this.nameRegistry.resolve(name);
   }
 
   get peerId(): PeerId {
@@ -313,9 +331,29 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
     return wsUrl;
   }
 
-  // ─── Private — Signaling message handling ─────────────────────────────────
+  // ─── Private — Signaling message handling ─────────────────────────────
 
-  private handleSignalingMessage(msg: SignalingMessage): void {
+  private async handleSignalingMessage(msg: SignalingMessage): Promise<void> {
+    // ─── Identity enrichment (Phase 1) ───
+    // Attach human-readable name if provided during signaling
+    if (msg.from && msg.name) {
+      const existing = this.peerInfo.get(msg.from);
+
+      this.peerInfo.set(msg.from, {
+        ...existing,
+        peerId: msg.from,
+        name: msg.name,
+        ens: msg.ens,
+      } as any);
+
+      this.nameRegistry.register({
+        name: msg.name,
+        peerId: msg.from,
+        ens: msg.ens,
+        timestamp: Date.now(),
+      });
+    }
+
     switch (msg.type) {
       case "peer-list":
         for (const peerId of msg.payload as PeerId[]) {
@@ -325,11 +363,40 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
         }
         break;
 
-      case "offer":
+      case "offer": {
         if (msg.to === this.localPeerId) {
           this.createPeer(msg.from, false, msg.payload);
+
+          this.peerIdentity.set(msg.from, {
+            name: msg.name,
+            ens: msg.ens,
+          });
+
+          let resolvedPeerId = msg.from;
+
+          if (msg.name?.endsWith(".eth")) {
+            const resolved = await this.ensResolver.resolve(msg.name);
+            if (resolved) {
+              resolvedPeerId = resolved;
+            }
+          }
+
+          const existing = this.peerInfo.get(msg.from);
+
+          this.peerInfo.set(msg.from, {
+            ...(existing ?? {
+              peerId: msg.from,
+              did: "",
+              publicKey: "",
+              connectedAt: Date.now(),
+            }),
+            name: msg.name ?? existing?.name,
+            ens: msg.ens ?? existing?.ens,
+          });
         }
+
         break;
+      }
 
       case "answer":
         this.peers.get(msg.from)?.signal(msg.payload as any);
@@ -374,16 +441,29 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
           from: this.localPeerId,
           to: remotePeerId,
           payload: data,
+
+          // Human-readable identity metadata
+          name:
+            this.config.network?.name?.trim() !== ""
+              ? this.config.network?.name?.trim()
+              : undefined,
+
+          ens:
+            this.config.network?.ens?.trim() !== "" ? this.config.network?.ens?.trim() : undefined,
         })
       );
     });
 
     peer.on("connect", () => {
+      const identity = this.peerIdentity.get(remotePeerId);
+
       const info: PeerInfo = {
         peerId: remotePeerId,
         did: "",
         publicKey: "",
         connectedAt: Date.now(),
+        name: identity?.name,
+        ens: identity?.ens,
       };
       this.peerInfo.set(remotePeerId, info);
       this.emit("peer:connected", info);
