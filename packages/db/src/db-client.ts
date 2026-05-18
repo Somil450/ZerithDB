@@ -13,10 +13,8 @@ import { ZerithDBError, ErrorCode, EventEmitter } from "zerithdb-core";
 import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
 import { EventEmitter } from "zerithdb-core";
 import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
-
-type CollectionEvents<T extends Record<string, any>> = {
-  mutation: { collectionName: string; doc: Document<T>; type: "insert" | "update" | "delete" };
-};
+import { GraphClient } from "./graph-client.js";
+import type { GraphNode, GraphEdge } from "zerithdb-core";
 
 /**
  * A handle to a single named collection within the ZerithDB local database.
@@ -178,43 +176,30 @@ export class CollectionClient<
    */
 
   async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
-    if ((spec as any) === null || (spec as any) === undefined) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Update spec must not be null or undefined");
-    }
-    if (!spec.$set && !spec.$unset) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Update spec must include $set or $unset");
-    }
+    // Validate spec (from upstream/main)
     if (
-      spec.$set !== undefined && Object.keys(spec.$set).length === 0 &&
-      spec.$unset !== undefined && Object.keys(spec.$unset).length === 0
+      !spec ||
+      Object.keys(spec).length === 0 ||
+      ((!spec.$set || Object.keys(spec.$set).length === 0) &&
+        (!spec.$unset || Object.keys(spec.$unset).length === 0))
     ) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Update spec $set and $unset must not both be empty");
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Update spec cannot be empty. Must provide non-empty $set or $unset."
+      );
     }
+    await this.checkBiometric("Update Documents");
 
+    // Fix: call find() OUTSIDE the write wrap so read errors throw DB_READ_FAILED naturally
+    const matches = await this.find(filter);
+    const now = Date.now();
+
+    // Wrap only the write operation to catch write failures as DB_WRITE_FAILED
     return wrapIDBOperation(
       ErrorCode.DB_WRITE_FAILED,
       `Failed to update documents in "${this.collectionName}"`,
       async () => {
-        const matches = await this.find(filter);
-
-        if (matches.length === 0) {
-          return 0;
-        }
-
-        const now = Date.now();
-
-        const updatedDocs = matches.map((doc) => {
-          const next = this.applyUpdateSpec(doc, spec, now);
-          next._vclock = { ...doc._vclock, [this.peerId]: (doc._vclock[this.peerId] || 0) + 1 };
-          next._lamport = Math.max(doc._lamport, now) + 1;
-          return next;
-        });
-
-        await this.table.bulkPut(updatedDocs);
-        for (const doc of updatedDocs) {
-          this.emit("mutation", { collectionName: this.collectionName, doc, type: "update" });
-        }
-
+        await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
         return matches.length;
       }
     );
@@ -557,10 +542,4 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
     this.removeAllListeners();
     this.dexie.close();
   }
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
 }
