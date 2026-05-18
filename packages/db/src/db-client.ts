@@ -8,7 +8,6 @@ import type {
   InsertResult,
   UpdateSpec,
   CollectionOptions,
-  DocumentId,
 } from "zerithdb-core";
 import { ZerithDBError, ErrorCode } from "zerithdb-core";
 import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
@@ -37,146 +36,30 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
   private readonly idStrategy: "uuid" | "autoincrement";
 
   constructor(
-    private readonly tableFn: () => Table<Document<T>>,
+    private readonly table: Table<Document<T>>,
     private readonly collectionName: string,
-    private readonly seqTableFn: () => Table<SequenceRecord>,
-    options: CollectionOptions = {}
-  ) {
-    this.idStrategy = options.idStrategy ?? "uuid";
-  }
-
-  /** Always returns the current live Dexie table reference. */
-  private get table(): Table<Document<T>> {
-    return this.tableFn();
-  }
-
-  /** Always returns the current live sequence-store reference. */
-  private get seqTable(): Table<SequenceRecord> {
-    return this.seqTableFn();
-  }
-
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
+    private readonly options?: CollectionOptions<T>
+  ) {}
 
   /**
-   * Atomically fetch-and-increment the integer sequence for this collection.
-   *
-   * The counter is stored in a dedicated `__zerithdb_seq` table so we never
-   * have to scan the actual collection to find `MAX(_id)`.
+   * Validates a raw document against the collection schema (if configured).
+   * Throws a `ZerithDBError` with code `DB_VALIDATION_FAILED` on failure.
    */
-  private async _nextIntegerId(): Promise<number> {
-    return wrapIDBOperation(
-      ErrorCode.DB_WRITE_FAILED,
-      `Failed to increment auto-increment sequence for "${this.collectionName}"`,
-      async () => {
-        const existing = await this.seqTable.get(this.collectionName);
-        const nextId = (existing?._lastId ?? 0) + 1;
-        await this.seqTable.put({ _collectionName: this.collectionName, _lastId: nextId });
-        return nextId;
-      }
-    );
-  }
-
-  /** Generate the next `_id` according to the configured strategy. */
-  private async _generateId(): Promise<DocumentId> {
-    if (this.idStrategy === "autoincrement") {
-      return this._nextIntegerId();
+  private validateDoc(doc: T): void {
+    if (!this.options?.schema) return;
+    try {
+      this.options.schema.parse(doc);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : `Document failed schema validation in collection "${this.collectionName}"`;
+      throw new ZerithDBError(
+        ErrorCode.DB_VALIDATION_FAILED,
+        `Schema validation failed in "${this.collectionName}": ${message}`,
+        { cause: err }
+      );
     }
-    return uuidv7();
-  }
-
-  // -------------------------------------------------------------------------
-  // Public API
-  // -------------------------------------------------------------------------
-
-
-  /**
-   * Subscribe to changes in the collection.
-   * Uses Dexie's liveQuery to reactively notify when documents change.
-   *
-   * @param callback - Function called with the updated list of all documents
-   * @returns An unsubscribe function
-   */
-
-  subscribe(callback: (documents: Document<T>[]) => void): () => void {
-    const observable = liveQuery(() => this.find());
-
-    const subscription = observable.subscribe({
-      next: (docs) => callback(docs),
-      error: (err) =>
-        console.error(
-          `[ZerithDB] Error in subscription to collection "${this.collectionName}":`,
-          err
-        ),
-    });
-
-    return () => subscription.unsubscribe();
-  }
-
-  /**
-   * Insert a document if it doesn't exist, or update it if it does.
-   * Automatically manages timestamps.
-   * insted of add we use put
-   * put() inserts OR replace/update automatically
-   */
-
-  private validateDocument(document: unknown): void {
-    if (document === null || document === undefined) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
-    }
-
-    if (typeof document !== "object" || Array.isArray(document)) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document must be a valid object");
-    }
-
-    if (Object.keys(document as object).length === 0) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be empty");
-    }
-
-    for (const field of RESERVED_FIELDS) {
-      if (field in (document as Record<string, any>)) {
-        throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, `Field "${field}" is reserved`);
-      }
-    }
-  }
-
-  private validateFilter(filter: unknown): void {
-    if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
-      throw new ZerithDBError(ErrorCode.DB_READ_FAILED, "Filter must be a valid object");
-    }
-  }
-
-  async upsert(document: Partial<T> & { _id?: string }): Promise<InsertResult> {
-    if (document === null || document === undefined) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
-    }
-
-    if (typeof document !== "object" || Array.isArray(document)) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document must be a valid object");
-    }
-
-    const now = Date.now();
-    const id = document._id ?? uuidv7();
-
-    const existing = await this.table.get(id);
-
-    const doc: Document<T> = {
-      ...(existing ?? {}),
-      ...document,
-      _id: id,
-      _createdAt: existing?._createdAt ?? now,
-      _updatedAt: now,
-    } as Document<T>;
-
-    return wrapIDBOperation(
-      ErrorCode.DB_WRITE_FAILED,
-      `Failed to upsert document in collection "${this.collectionName}"`,
-      async () => {
-        await this.table.put(doc);
-        return { id };
-      }
-    );
   }
 
   /**
@@ -189,9 +72,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    */
 
   async insert(document: T): Promise<InsertResult> {
-    if ((document as any) === null || (document as any) === undefined) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document must not be null or undefined");
-    }
+    // Validate before touching the database
+    this.validateDoc(document);
+
     const now = Date.now();
     const id = await this._generateId();
     const doc: Document<T> = {
@@ -216,6 +99,11 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Insert multiple documents in a single atomic operation.
    */
   async insertMany(documents: T[]): Promise<InsertResult[]> {
+    // Validate all documents before touching the database
+    for (const doc of documents) {
+      this.validateDoc(doc);
+    }
+
     const now = Date.now();
 
     // Generate all IDs up-front so each call to _generateId() runs in order
@@ -346,9 +234,17 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         }
 
         const now = Date.now();
+        const updated = matches.map((doc) => this.applyUpdateSpec(doc, spec, now));
 
-        await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
+        // Validate the updated shape (strip internal fields before validating)
+        if (this.options?.schema) {
+          for (const doc of updated) {
+            const { _id, _createdAt, _updatedAt, ...raw } = doc as Document<T> & Record<string, unknown>;
+            this.validateDoc(raw as T);
+          }
+        }
 
+        await this.table.bulkPut(updated);
         return matches.length;
       }
     );
@@ -612,45 +508,10 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
     }
   }
 
-  setAuth(auth: AuthManager): void {
-    this.authManager = auth;
-  }
-
-  setCapability(ucan: UCAN): void {
-    this.currentCapability = ucan;
-  }
-
-  clearCapability(): void {
-    this.currentCapability = undefined;
-  }
-
-  /**
-   * Open a collection handle.
-   *
-   * @param name    - Collection name
-   * @param options - Optional configuration, e.g. `{ idStrategy: "autoincrement" }`
-   *
-   * @example UUID v7 IDs (default)
-   * ```ts
-   * const users = db.collection("users");
-   * await users.insert({ name: "Alice" }); // _id: "01973c6e-..."
-   * ```
-   *
-   * @example Auto-incrementing integer IDs
-   * ```ts
-   * const posts = db.collection("posts", { idStrategy: "autoincrement" });
-   * await posts.insert({ title: "Hello" }); // _id: 1
-   * await posts.insert({ title: "World" }); // _id: 2
-   * ```
-   */
-  collection<T extends Record<string, any>>(
-    name: string,
-    options: CollectionOptions = {}
-  ): CollectionClient<T> {
-    // Cache key includes the strategy so callers can't accidentally mix strategies
-    // on the same collection name in the same session.
-    if (name === null || name === undefined || typeof name !== "string" || name.trim() === "") {
-      throw new ZerithDBError(ErrorCode.DB_INIT_FAILED, `Invalid collection name: "${String(name)}"`);
+  collection<T extends Record<string, any>>(name: string, options?: CollectionOptions<T>): CollectionClient<T> {
+    if (!this.collections.has(name)) {
+      const table = this.dexie.ensureCollection(name);
+      this.collections.set(name, new CollectionClient<T>(table as Table<Document<T>>, name, options));
     }
     const cacheKey = `${name}:${options.idStrategy ?? "uuid"}`;
 

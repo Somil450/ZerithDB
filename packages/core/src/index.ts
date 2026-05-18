@@ -26,6 +26,8 @@ export type {
   UpdateSpec,
   InsertResult,
   FindResult,
+  SchemaValidator,
+  CollectionOptions,
 } from "./types/db.js";
 export type { PeerId, PeerInfo, RoomId, NetworkMessage } from "./types/network.js";
 export type { Identity, PublicKey, Signature } from "./types/auth.js";

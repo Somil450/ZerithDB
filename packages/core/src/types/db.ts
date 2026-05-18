@@ -127,3 +127,27 @@ export type FindResult<T extends Record<string, any>> = {
   documents: Document<T>[];
   count: number;
 };
+
+/**
+ * A generic schema validator interface.
+ * Any object with a `parse(data: unknown): T` method satisfies this interface.
+ * This is compatible with Zod schemas out of the box:
+ *
+ * @example
+ * ```typescript
+ * import { z } from "zod";
+ * const schema = z.object({ text: z.string(), done: z.boolean() });
+ * const todos = app.db("todos", { schema });
+ * ```
+ */
+export interface SchemaValidator<T> {
+  parse(data: unknown): T;
+}
+
+/**
+ * Options for configuring a collection instance.
+ */
+export interface CollectionOptions<T extends Record<string, any>> {
+  /** Optional schema validator. If provided, all inserts and updates are validated before being written. */
+  schema?: SchemaValidator<T>;
+}

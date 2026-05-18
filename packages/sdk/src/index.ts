@@ -35,8 +35,8 @@ export type {
   Identity,
   PeerInfo,
   SyncState,
-  ConflictResolverConfig,
-  ConflictResolver,
+  CollectionOptions,
+  SchemaValidator,
 } from "zerithdb-core";
 
 export { ZerithDBError, ErrorCode } from "zerithdb-errors";

@@ -1,6 +1,5 @@
 import { Logger } from "zerithdb-core";
-import type { Document, Identity, QueryFilter, SyncState, ZerithDBConfig, InsertResult, PeerInfo, UpdateSpec } from "zerithdb-core";
-export type { Document, Identity, QueryFilter, SyncState, ZerithDBConfig, InsertResult, PeerInfo, UpdateSpec };
+import type { ZerithDBConfig, CollectionOptions } from "zerithdb-core";
 import { MemoryCollector, estimateStorageBytes } from "zerithdb-devtools";
 import { ZerithDBError, ErrorCode } from "zerithdb-core";
 import { DbClient, CollectionClient } from "./db-client.js";
@@ -19,18 +18,25 @@ export interface ZerithDBApp {
    * Access a database collection by name.
    * The collection is created lazily on first use.
    *
+   * Optionally pass a `schema` validator (e.g. a Zod schema) to enable
+   * runtime document validation before any insert or update.
+   *
    * @param name - Collection name (e.g. `"todos"`, `"messages"`)
-   * @returns A typed {@link DbClient} for querying and mutating documents.
+   * @param options - Optional collection config (e.g. `{ schema: zodSchema }`)
+   * @returns A typed {@link CollectionClient} for querying and mutating documents.
    *
    * @example
    * ```typescript
-   * const todos = app.db("todos");
-   * await todos.insert({ text: "Hello", done: false });
-   * const all = await todos.find({});
+   * import { z } from "zod";
+   * const TodoSchema = z.object({ text: z.string(), done: z.boolean() });
+   * type Todo = z.infer<typeof TodoSchema>;
+   *
+   * const todos = app.db<Todo>("todos", { schema: TodoSchema });
+   * await todos.insert({ text: "Hello", done: false }); // ✅ valid
+   * await todos.insert({ text: "", done: false });       // ❌ throws DB_VALIDATION_FAILED
    * ```
    */
-  db<T extends Record<string, any> = Record<string, any>>(name: string): CollectionClient<T>;
-  dbClient: DbClient;
+  db<T extends Record<string, any> = Record<string, any>>(name: string, options?: CollectionOptions<T>): CollectionClient<T>;
 
   /** CRDT sync engine — manages Yjs documents and P2P update propagation */
   sync: SyncEngine;
@@ -189,10 +195,10 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
   return {
     config: Object.freeze(resolvedConfig),
 
-    db<T extends Record<string, any>>(name: string): CollectionClient<T> {
+    db<T extends Record<string, any>>(name: string, options?: CollectionOptions<T>): CollectionClient<T> {
       // DbClient already caches collection instances internally —
       // no need for a second cache layer here.
-      return db.collection<T>(name);
+      return db.collection<T>(name, options);
     },
 
     dbClient: db,
