@@ -1,4 +1,4 @@
-import Dexie, { type Table, liveQuery } from "dexie";
+import { Dexie, type Table, liveQuery } from "dexie";
 import { v7 as uuidv7 } from "uuid";
 import type {
   ZerithDBConfig,
@@ -13,7 +13,11 @@ import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
 import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
 import { GraphClient } from "./graph-client.js";
 import type { GraphNode, GraphEdge } from "zerithdb-core";
-import { uploadLargeFiles, downloadLargeFiles, DefaultIpfsProvider } from "./ipfs.js";
+
+// [UCAN] Imports for capability verification
+import type { AuthManager } from "zerithdb-auth";
+import type { UCAN, Capability } from "zerithdb-auth";
+import { allowsAction } from "zerithdb-auth";
 
 /**
  * A handle to a single named collection within the ZerithDB local database.
@@ -23,73 +27,13 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
   constructor(
     private readonly table: Table<Document<T>>,
     private readonly collectionName: string,
-    private readonly config?: ZerithDBConfig,
-    private readonly dexie?: ZerithDBDexie
+    private readonly appId: string,
+    private readonly getAuth: () => AuthManager | undefined,
+    private readonly getCapability: () => UCAN | undefined
   ) {}
 
-  private async checkBiometric(operationDescription: string): Promise<void> {
-    if (this.auth?.biometric?.isBiometricRequiredForDB()) {
-      const authorized = await this.auth.biometric.promptBiometric(
-        `Authorize sensitive database operation: ${operationDescription} in collection "${this.collectionName}"`
-      );
-      if (!authorized) {
-        throw new ZerithDBError(
-          ErrorCode.AUTH_SIGN_FAILED,
-          "Database operation cancelled or biometric authentication failed."
-        );
-      }
-    }
-  }
-
-  /**
-   * Subscribe to live changes in the collection.
-   * Uses Dexie's liveQuery to reactively re-invoke the callback whenever
-   * matching documents are inserted, updated, or deleted in IndexedDB.
-   *
-   * Fix (BUG-02): Previously the filter was hardcoded to `{}` (match all),
-   * meaning every subscriber always received the entire collection regardless
-   * of what they wanted to observe. The filter is now passed through to
-   * `find()` so only matching documents are streamed to the callback.
-   *
-   * **Important:** The filter is evaluated *inside* the liveQuery closure so
-   * Dexie can correctly track which IndexedDB reads to watch for reactivity.
-   * Moving it outside the closure would break live updates.
-   *
-   * @param callback - Called with the current matching documents on every change
-   * @param filter   - Optional MongoDB-style filter (same as `find(filter)`).
-   *                   Defaults to `{}` which matches all documents.
-   *                   Existing callers that omit the filter are unaffected.
-   * @returns An unsubscribe function — call it to stop the subscription
-   *
-   * @example
-   * ```typescript
-   * // Subscribe to ALL documents (existing behaviour — unchanged)
-   * const unsub = todos.subscribe((docs) => console.log(docs));
-   *
-   * // Subscribe to only undone tasks (new capability)
-   * const unsub = todos.subscribe(
-   *   (docs) => console.log("Undone:", docs),
-   *   { done: false }
-   * );
-   *
-   * // Subscribe with operators
-   * const unsub = todos.subscribe(
-   *   (docs) => console.log("High priority:", docs),
-   *   { priority: { $gte: 3 } }
-   * );
-   *
-   * unsub(); // stop listening
-   * ```
-   */
-  subscribe(
-    callback: (documents: Document<T>[]) => void,
-    filter: QueryFilter<T> = {}
-  ): () => void {
-    // The filter reference is captured inside the liveQuery closure.
-    // This is required — Dexie tracks all IDB reads that happen INSIDE the
-    // closure to build its reactive dependency graph. If find() were called
-    // outside, Dexie would not know which table changes to watch.
-    const observable = liveQuery(() => this.find(filter));
+  subscribe(callback: (documents: Document<T>[]) => void): () => void {
+    const observable = liveQuery(() => this.find());
     const subscription = observable.subscribe({
       next: (docs) => callback(docs),
       error: (err) =>
@@ -101,49 +45,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     return () => subscription.unsubscribe();
   }
 
-  /**
-   * Insert a new document into the collection.
-   * Automatically assigns `_id`, `_createdAt`, and `_updatedAt`.
-   */
-  private async restoreIpfsReferences(doc: Document<T>): Promise<Document<T>> {
-    if (!this.config?.ipfs?.enabled) return doc;
-
-    const cacheTable = this.dexie?.ensureIpfsCacheTable();
-    const cacheGet = async (cid: string) => {
-      if (!cacheTable) return undefined;
-      return Dexie.ignoreTransaction(async () => {
-        const entry = await cacheTable.get(cid);
-        return entry?.data;
-      });
-    };
-    const cacheSet = async (cid: string, data: Blob | Uint8Array) => {
-      if (!cacheTable) return;
-      await Dexie.ignoreTransaction(async () => {
-        await cacheTable.put({ cid, data, cachedAt: Date.now() });
-      });
-    };
-
-    const provider =
-      this.config.ipfs.provider ??
-      new DefaultIpfsProvider(this.config.ipfs.apiUrl, this.config.ipfs.gatewayUrl);
-    const fetchFn = async (cid: string): Promise<Blob> => {
-      if (!this.dexie) {
-        return provider.fetch(cid);
-      }
-      let active = this.dexie.activeFetches.get(cid);
-      if (!active) {
-        active = provider.fetch(cid).finally(() => {
-          this.dexie?.activeFetches.delete(cid);
-        });
-        this.dexie.activeFetches.set(cid, active);
-      }
-      return active;
-    };
-
-    return downloadLargeFiles(doc, fetchFn, cacheGet, cacheSet);
-  }
-
   async insert(document: T): Promise<InsertResult> {
+    await this.checkPermission("create");
+
     if (document === null || document === undefined) {
       throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
     }
@@ -176,10 +80,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  /**
-   * Insert multiple documents in a single atomic operation.
-   */
   async insertMany(documents: T[]): Promise<InsertResult[]> {
+    await this.checkPermission("create");
+
     if (!Array.isArray(documents) || documents.length === 0) {
       throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents must be a non-empty array");
     }
@@ -292,11 +195,10 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     return results;
   }
 
-  /**
-   * Find a single document by its `_id`.
-   */
   async findById(id: string): Promise<Document<T> | undefined> {
-    const doc = await wrapIDBOperation(
+    await this.checkPermission("read");
+
+    return wrapIDBOperation(
       ErrorCode.DB_READ_FAILED,
       `Failed to get document "${id}" from "${this.collectionName}"`,
       () => this.table.get(id)
@@ -305,11 +207,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     return this.restoreIpfsReferences(doc);
   }
 
-  /**
-   * Update documents matching a filter.
-   * Returns the number of updated documents.
-   */
   async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
+    await this.checkPermission("write");
+
     if (
       !spec ||
       Object.keys(spec).length === 0 ||
@@ -351,12 +251,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  /**
-   * Delete documents matching a filter.
-   * Returns the number of deleted documents.
-   */
   async delete(filter: QueryFilter<T>): Promise<number> {
-    await this.checkBiometric("Delete Documents");
+    await this.checkPermission("delete");
+
     return wrapIDBOperation(
       ErrorCode.DB_DELETE_FAILED,
       `Failed to delete documents from "${this.collectionName}"`,
@@ -369,11 +266,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  /**
-   * Delete every document in the collection.
-   */
   async clearAll(): Promise<void> {
-    await this.checkBiometric("Clear Collection");
+    await this.checkPermission("delete");
+
     return wrapIDBOperation(
       ErrorCode.DB_DELETE_FAILED,
       `Failed to clear collection "${this.collectionName}"`,
@@ -381,15 +276,13 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  /** Alias for {@link clearAll} */
   async clear(): Promise<void> {
     return this.clearAll();
   }
 
-  /**
-   * Count documents matching a filter.
-   */
   async count(filter: QueryFilter<T> = {}): Promise<number> {
+    await this.checkPermission("read");
+
     return wrapIDBOperation(
       ErrorCode.DB_READ_FAILED,
       `Failed to count documents in "${this.collectionName}"`,
@@ -408,151 +301,36 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  /**
-   * Move a document with `docId` strictly between `beforeId` and `afterId` using fractional indexing.
-   * Automatically handles start, middle, and end insertion. Updates the document in the local IndexedDB.
-   * If the newly generated string index exceeds 50 characters, triggers a background re-balance.
-   *
-   * @param docId - The ID of the document to move
-   * @param beforeId - The ID of the document before the target position (null if moving to start)
-   * @param afterId - The ID of the document after the target position (null if moving to end)
-   * @param orderKey - The document key where fractional index is stored (defaults to "_order")
-   * @returns The generated fractional index string key
-   */
-  async moveBetween(
-    docId: string,
-    beforeId: string | null,
-    afterId: string | null,
-    orderKey = "_order"
-  ): Promise<string> {
-    if (docId === beforeId || docId === afterId) {
-      throw new ZerithDBError(
-        ErrorCode.ASSERTION_FAILED,
-        "Cannot move a document relative to itself"
-      );
-    }
+ private async checkPermission(action: "read" | "write" | "create" | "delete"): Promise<void> {
+  const auth = this.getAuth();
+  if (!auth) return; // no auth → skip checks (legacy mode)
 
-    return wrapIDBOperation(
-      ErrorCode.DB_WRITE_FAILED,
-      `Failed to move document "${docId}" in collection "${this.collectionName}"`,
-      async () => {
-        // Fetch target document
-        const doc = await this.findById(docId);
-        if (!doc) {
-          throw new ZerithDBError(
-            ErrorCode.DB_WRITE_FAILED,
-            `Target document "${docId}" not found in collection "${this.collectionName}"`
-          );
-        }
-
-        // Fetch boundary documents
-        const beforeDoc = beforeId ? await this.findById(beforeId) : null;
-        if (beforeId && !beforeDoc) {
-          throw new ZerithDBError(
-            ErrorCode.DB_WRITE_FAILED,
-            `Boundary document (before) "${beforeId}" not found in collection "${this.collectionName}"`
-          );
-        }
-
-        const afterDoc = afterId ? await this.findById(afterId) : null;
-        if (afterId && !afterDoc) {
-          throw new ZerithDBError(
-            ErrorCode.DB_WRITE_FAILED,
-            `Boundary document (after) "${afterId}" not found in collection "${this.collectionName}"`
-          );
-        }
-
-        // Self-healing: if any document lacks an order key, initialize all order keys in the collection
-        const hasMissingOrder =
-          !(orderKey in doc) ||
-          (beforeDoc && !(orderKey in beforeDoc)) ||
-          (afterDoc && !(orderKey in afterDoc));
-
-        let currentBeforeDoc = beforeDoc;
-        let currentAfterDoc = afterDoc;
-
-        if (hasMissingOrder) {
-          await this.rebalance(orderKey);
-
-          // Re-fetch all documents to get their newly assigned order keys
-          const reFetchedDoc = await this.findById(docId);
-          if (reFetchedDoc) {
-            Object.assign(doc, reFetchedDoc);
-          }
-          if (beforeId) {
-            currentBeforeDoc = (await this.findById(beforeId)) ?? null;
-          }
-          if (afterId) {
-            currentAfterDoc = (await this.findById(afterId)) ?? null;
-          }
-        }
-
-        // Extract current fractional keys
-        const beforeOrder = currentBeforeDoc ? (currentBeforeDoc[orderKey] as string) : null;
-        const afterOrder = currentAfterDoc ? (currentAfterDoc[orderKey] as string) : null;
-
-        // Generate deterministic lexical midpoint
-        const newOrder = generateKeyBetween(beforeOrder, afterOrder);
-
-        // Save updated document to database
-        const now = Date.now();
-        await this.table.update(docId, {
-          [orderKey]: newOrder,
-          _updatedAt: now,
-        } as any);
-
-        // Trigger asynchronous background re-balance if string length grows too long
-        if (newOrder.length > 50) {
-          this.rebalance(orderKey).catch((err) => {
-            console.error(`Background rebalance failed for collection "${this.collectionName}":`, err);
-          });
-        }
-
-        return newOrder;
-      }
+  const capabilityUcan = this.getCapability();
+  if (!capabilityUcan) {
+    throw new ZerithDBError(
+      ErrorCode.PERMISSION_DENIED,
+      `No capability set for collection "${this.collectionName}". Call db.setCapability() first.`
     );
   }
 
-  /**
-   * Rebalances the fractional indexes in the collection to prevent long key strings.
-   * Sorts all documents by their current fractional index key and re-allocates evenly spaced keys.
-   *
-   * @param orderKey - The key where fractional index is stored (defaults to "_order")
-   */
-  async rebalance(orderKey = "_order"): Promise<void> {
-    return wrapIDBOperation(
-      ErrorCode.DB_WRITE_FAILED,
-      `Failed to rebalance order keys in collection "${this.collectionName}"`,
-      async () => {
-        const allDocs = await this.table.toArray();
-
-        // Sort documents by current orderKey, falling back to creation time and ID to guarantee deterministic output
-        allDocs.sort((a, b) => {
-          const valA = (a[orderKey] as string) ?? "";
-          const valB = (b[orderKey] as string) ?? "";
-          if (valA < valB) return -1;
-          if (valA > valB) return 1;
-
-          const timeA = a._createdAt ?? 0;
-          const timeB = b._createdAt ?? 0;
-          if (timeA !== timeB) return timeA - timeB;
-
-          return a._id.localeCompare(b._id);
-        });
-
-        const balancedKeys = rebalanceKeys(allDocs.length);
-        const now = Date.now();
-
-        const updates = allDocs.map((doc, idx) => ({
-          ...doc,
-          [orderKey]: balancedKeys[idx],
-          _updatedAt: now,
-        }));
-
-        await this.table.bulkPut(updates);
-      }
+  const isValid = await auth.verifyUCAN(capabilityUcan);
+  if (!isValid) {
+    throw new ZerithDBError(
+      ErrorCode.PERMISSION_DENIED,
+      `Capability for collection "${this.collectionName}" is invalid or expired.`
     );
   }
+
+  const capabilities = auth.getCapabilities(capabilityUcan);
+  const resource = `zerithdb://${this.appId}/${this.collectionName}`;
+  const allowed = capabilities.some((cap: Capability) => allowsAction(cap, resource, action));
+  if (!allowed) {
+    throw new ZerithDBError(
+      ErrorCode.PERMISSION_DENIED,
+      `Action "${action}" on collection "${this.collectionName}" not granted by current capability.`
+    );
+  }
+}
 
   private applyUpdateSpec(doc: Document<T>, spec: UpdateSpec<T>, updatedAt: number): Document<T> {
     const next = {
@@ -580,13 +358,10 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         continue;
       }
 
-      // Distinguish operator objects ({ $gt: 3 }) from plain object values ({ key: "v" }).
-      // Only treat as operators if at least one key starts with "$".
       const conditions = condition as Record<string, any>;
       const isOperatorObject = Object.keys(conditions).some((k) => k.startsWith("$"));
 
       if (!isOperatorObject) {
-        // Deep equality check for plain object / array values
         if (JSON.stringify(fieldValue) !== JSON.stringify(condition)) return false;
         continue;
       }
@@ -607,24 +382,16 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         return false;
       if ("$exists" in conditions) {
         const exists = key in doc;
-
-        if (conditions.$exists !== exists) {
-          return false;
-        }
+        if (conditions.$exists !== exists) return false;
       }
       if ("$regex" in conditions) {
-        if (typeof fieldValue !== "string") {
-          return false;
-        }
-
+        if (typeof fieldValue !== "string") return false;
         const regex =
-          conditions.$regex instanceof RegExp ? conditions.$regex : new RegExp(conditions.$regex);
-
+          conditions.$regex instanceof RegExp
+            ? conditions.$regex
+            : new RegExp(conditions.$regex);
         regex.lastIndex = 0;
-
-        if (!regex.test(fieldValue)) {
-          return false;
-        }
+        if (!regex.test(fieldValue)) return false;
       }
     }
     return true;
@@ -677,10 +444,7 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
   }
 }
 
-/**
- * Internal Dexie subclass that manages dynamic collection creation.
- * Collections are added lazily via schema version upgrades.
- */
+// Dexie subclass (unchanged)
 class ZerithDBDexie extends Dexie {
   private readonly tableMap = new Map<string, Table>();
   private _currentSchema: Record<string, string> = {};
@@ -691,36 +455,10 @@ class ZerithDBDexie extends Dexie {
     super(`zerithdb_${appId}`);
   }
 
-  ensureIpfsCacheTable(): Table {
-    const key = "__ipfs_cache";
-    if (!this.tableMap.has(key)) {
-      this._currentSchema[key] = "cid, cachedAt";
-
-      const nextVersion = Math.max(this.verno, this._pendingVersion) + 1;
-      this._pendingVersion = nextVersion;
-
-      if (this.isOpen()) {
-        this.close();
-      }
-
-      this.version(nextVersion).stores(this._currentSchema);
-      this.tableMap.set(key, this.table(key));
-    }
-    return this.table(key);
-  }
-
-  /**
-   * Ensure a named collection exists, creating it via a Dexie version
-   * upgrade if it has not been registered yet.
-   *
-   * @param name - The collection name to create or retrieve
-   * @returns The Dexie {@link Table} handle for the collection
-   */
   ensureCollection(name: string): Table {
     if (!this.tableMap.has(name)) {
       this._currentSchema[name] = "_id, _createdAt, _updatedAt";
 
-      // We must increment the version for every new collection added dynamically
       const nextVersion = Math.max(this.verno, this._pendingVersion) + 1;
       this._pendingVersion = nextVersion;
 
@@ -731,7 +469,7 @@ class ZerithDBDexie extends Dexie {
       this.version(nextVersion).stores(this._currentSchema);
       this.tableMap.set(name, this.table(name));
     }
-    return this.table(name);
+    return this.tableMap.get(name)!;
   }
 
   ensureGraphTables(graphName: string): { nodesTable: Table; edgesTable: Table } {
@@ -761,24 +499,34 @@ class ZerithDBDexie extends Dexie {
   }
 }
 
-/**
- * Internal database client. Wraps Dexie and manages collection instances.
- * Use via {@link ZerithDBApp.db} — not instantiated directly.
- */
+// DbClient (corrected)
 export class DbClient {
   private readonly dexie: ZerithDBDexie;
   private readonly appId: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly collections = new Map<string, CollectionClient<any>>();
-
   private readonly graphs = new Map<string, GraphClient<any>>();
 
-  constructor(private readonly config: ZerithDBConfig) {
+  private authManager?: AuthManager;
+  private currentCapability?: UCAN;
+
+  constructor(config: ZerithDBConfig) {
     this.appId = config.appId;
     this.dexie = new ZerithDBDexie(config.appId);
     if (config.ipfs?.enabled) {
       this.dexie.ensureIpfsCacheTable();
     }
+  }
+
+  setAuth(auth: AuthManager): void {
+    this.authManager = auth;
+  }
+
+  setCapability(ucan: UCAN): void {
+    this.currentCapability = ucan;
+  }
+
+  clearCapability(): void {
+    this.currentCapability = undefined;
   }
 
   collection<T extends Record<string, any>>(name: string): CollectionClient<T> {
@@ -790,22 +538,20 @@ export class DbClient {
     }
     if (!this.collections.has(name)) {
       const table = this.dexie.ensureCollection(name);
+      const getAuth = () => this.authManager;
+      const getCapability = () => this.currentCapability;
       this.collections.set(
         name,
-        new CollectionClient<T>(table as Table<Document<T>>, name, this.config, this.dexie)
+        new CollectionClient<T>(
+          table as Table<Document<T>>,
+          name,
+          this.appId,
+          getAuth,
+          getCapability
+        )
       );
     }
     return this.collections.get(name) as CollectionClient<T>;
-  }
-
-  /**
-   * Clears the local IPFS/Filecoin binary cache.
-   */
-  async clearIpfsCache(): Promise<void> {
-    if (this.config.ipfs?.enabled) {
-      const table = this.dexie.ensureIpfsCacheTable();
-      await Dexie.ignoreTransaction(() => table.clear());
-    }
   }
 
   graph<T extends Record<string, any> = Record<string, any>>(name: string): GraphClient<T> {
@@ -813,7 +559,11 @@ export class DbClient {
       const { nodesTable, edgesTable } = this.dexie.ensureGraphTables(name);
       this.graphs.set(
         name,
-        new GraphClient<T>(nodesTable as Table<GraphNode<T>>, edgesTable as Table<GraphEdge>, name)
+        new GraphClient<T>(
+          nodesTable as Table<GraphNode<T>>,
+          edgesTable as Table<GraphEdge>,
+          name
+        )
       );
     }
     return this.graphs.get(name) as GraphClient<T>;
@@ -832,24 +582,14 @@ export class DbClient {
     return { recordCount, collections };
   }
 
-  /**
-   * Returns names of collections that have been opened in this session.
-   */
   collectionNames(): string[] {
     return Array.from(this.collections.keys());
   }
 
-  /**
-   * Returns names of all collections currently stored in IndexedDB.
-   */
   allCollectionNames(): string[] {
     return this.dexie.tables.map((t) => t.name);
   }
 
-  /**
-   * Export all collections to a JSON-serializable snapshot.
-   * If options.collections is omitted, it exports ALL collections found in IndexedDB.
-   */
   async exportSnapshot(options: BackupExportOptions = {}): Promise<BackupSnapshot> {
     if (this.auth?.biometric?.isBiometricRequiredForDB()) {
       const authorized = await this.auth.biometric.promptBiometric(
@@ -884,6 +624,7 @@ export class DbClient {
       }
     );
   }
+
   async dispose(): Promise<void> {
     this.dexie.close();
   }

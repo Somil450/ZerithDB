@@ -1,13 +1,17 @@
 import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import type { ZerithDBConfig, SyncState, SyncPlugin } from "zerithdb-core";
-import { EventEmitter } from "zerithdb-core";
+import { EventEmitter, ZerithDBError, ErrorCode } from "zerithdb-core";
 import type { DbClient } from "zerithdb-db";
 import type { NetworkManager } from "zerithdb-network";
 import { InboxQueue } from "./queue/InboxQueue.js";
 import { OutboxQueue } from "./queue/OutboxQueue.js";
 import { EphemeralStateManager } from "./ephemeral-state.js";
 import { bytesToBase64, base64ToBytes } from "zerithdb-utils";
+// [UCAN] Imports for capability verification
+import type { AuthManager } from "zerithdb-auth";
+import type { UCAN, Capability } from "zerithdb-auth";
+import { allowsAction } from "zerithdb-auth";
 
 type SyncEvents = {
   "state:change": SyncState;
@@ -38,10 +42,15 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
   private syncTimerIsRaf: boolean = false;
   private antiEntropyTimer: any = null;
 
+  // [UCAN] Store capabilities granted by each peer
+  private peerCapabilities: Map<string, { ucan: UCAN; expiresAt: number }> = new Map();
+  private readonly appOwnerDid: string;
+
   constructor(
     private readonly config: ZerithDBConfig,
     private readonly db: DbClient,
-    private readonly network: NetworkManager
+    private readonly network: NetworkManager,
+    private readonly auth: AuthManager
   ) {
     super();
     this.ephemeral = new EphemeralStateManager(config, network);
@@ -59,19 +68,24 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", this.handleVisibilityChange);
     }
+
+    // [UCAN] Get the local app owner's DID
+    const identity = this.auth.identity;
+    if (!identity) {
+      throw new ZerithDBError(
+        ErrorCode.AUTH_KEY_NOT_FOUND,
+        "SyncEngine requires a signed‑in identity. Call auth.signIn() before enabling sync."
+      );
+    }
+    this.appOwnerDid = identity.did;
   }
 
   private handleVisibilityChange = (): void => {
     if (document.visibilityState === "visible") {
-      // Resume sync: Flush any local updates that accumulated while hidden.
-      // We don't need to 'enable()' because we never tore down incoming listeners.
       if (this.pendingUpdates.size > 0 && !this.syncTimer) {
         this.flushUpdates();
       }
     } else if (document.visibilityState === "hidden") {
-      // Pause outgoing sync: Clear the timer so it doesn't wake the CPU/radio.
-      // (requestAnimationFrame automatically pauses natively, but clearing it explicitly
-      // ensures the setTimeout fallback is safely neutralized).
       if (this.syncTimer) {
         if (this.syncTimerIsRaf && typeof window !== "undefined" && window.cancelAnimationFrame) {
           window.cancelAnimationFrame(this.syncTimer);
@@ -84,10 +98,6 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     }
   };
 
-  /**
-   * Enable P2P sync. After calling this, local changes are broadcast
-   * to connected peers and remote updates are applied locally.
-   */
   enable(): void {
     if (this._enabled) return;
     this._enabled = true;
@@ -104,12 +114,11 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     }, 100);
   }
 
-  /** Disable sync without disconnecting from peers */
   disable(): void {
     this._enabled = false;
     this.network.off("message", this.onPeerUpdate);
     this.network.off("peer:connected", this.onPeerConnected);
-    this.network.off("peer:disconnected", this.onPeerDisconnected);
+  this.network.off("peer:disconnected", this.onPeerDisconnected);
     this.ephemeral.disable();
     this.updateState({ synced: false, connectedPeers: 0 });
 
@@ -130,9 +139,6 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     }
   }
 
-  /**
-   * Register a synchronization plugin directly.
-   */
   registerPlugin(plugin: SyncPlugin): void {
     this.plugins.set(plugin.id, plugin);
     if (plugin.version > this.activePluginVersion) {
@@ -140,9 +146,6 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     }
   }
 
-  /**
-   * Dynamically load and register a plugin from a URL.
-   */
   async loadPlugin(pluginUrl: string): Promise<void> {
     try {
       const module = await import(pluginUrl);
@@ -153,9 +156,6 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     }
   }
 
-  /**
-   * Propose a protocol upgrade to all connected peers.
-   */
   proposeUpgrade(pluginUrl: string, version: number): void {
     this.network.broadcast({
       type: "sync-upgrade-offer",
@@ -163,24 +163,16 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     });
   }
 
-  /** Current sync state snapshot */
   get state(): Readonly<SyncState> {
     return this._state;
   }
 
-  /**
-   * Get or create the Yjs document for a collection.
-   * Documents are persisted to IndexedDB via y-indexeddb.
-   */
   getDoc(collectionName: string): Y.Doc {
     if (this.docs.has(collectionName)) {
-      // biome-ignore lint: map guarantees defined
       return this.docs.get(collectionName)!;
     }
 
     const doc = new Y.Doc({ guid: `${this.config.appId}:${collectionName}` });
-
-    // Persist to IndexedDB
     const persistence = new IndexeddbPersistence(
       `zerithdb_sync_${this.config.appId}_${collectionName}`,
       doc
@@ -190,9 +182,10 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
 doc.on("update", (update: Uint8Array, origin: unknown) => {
   if (origin === "remote") return; // Don't echo back remote updates
 
-  // Always queue the update so it eventually reaches the outbox (even if offline)
-  this.queueUpdate(collectionName, update);
-});
+    doc.on("update", (update: Uint8Array, origin: unknown) => {
+      if (origin === "remote") return;
+      this.queueUpdate(collectionName, update);
+    });
 
     this.docs.set(collectionName, doc);
 
@@ -208,20 +201,22 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
     return doc;
   }
 
-  /**
-   * Apply a remote CRDT update to the local document.
-   * Called by the network layer when a peer sends an update.
-   */
   async applyRemoteUpdate(
     collectionName: string,
     update: Uint8Array,
     fromPeer: string
   ): Promise<void> {
+    // [UCAN] Check permission before processing any remote update
+    if (!(await this.checkRemotePermission(fromPeer, collectionName, "write"))) {
+      console.warn(`Permission denied: peer ${fromPeer} cannot write to ${collectionName}`);
+      return;
+    }
+
     let finalUpdate: Uint8Array | null = update;
     for (const plugin of this.plugins.values()) {
       if (plugin.onBeforeApplyUpdate) {
         finalUpdate = await plugin.onBeforeApplyUpdate(collectionName, finalUpdate, fromPeer);
-        if (!finalUpdate) return; // Drop update
+        if (!finalUpdate) return;
       }
     }
 
@@ -264,8 +259,6 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
     }
     updates.push(update);
 
-    // Only schedule the next outgoing flush if the tab is visible.
-    // If hidden, the updates safely accumulate in the map without battery drain.
     if (
       !this.syncTimer &&
       (typeof document === "undefined" || document.visibilityState !== "hidden")
@@ -284,20 +277,77 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
     this.syncTimer = null;
     this.syncTimerIsRaf = false;
     for (const [collectionName, updates] of this.pendingUpdates.entries()) {
-      // Y.mergeUpdates merges all updates into a single efficient payload
       const merged = Y.mergeUpdates(updates);
       void this.handleLocalUpdate(collectionName, merged);
     }
     this.pendingUpdates.clear();
   }
 
+  // [UCAN] Send our own capability to a newly connected peer
+  private async sendCapability(peerId: string): Promise<void> {
+    const rootCapability: Capability = {
+      resource: `zerithdb://${this.config.appId}/*`,
+      actions: ["read", "write", "create", "delete", "sync"],
+    };
+    const ucan = await this.auth.delegate(peerId, [rootCapability], { expiresIn: 86400 });
+    this.network.sendTo(peerId, {
+      type: "capability",
+      payload: JSON.stringify(ucan),
+    });
+  }
+
+  // [UCAN] Handle an incoming capability message
+  private async handleCapability(fromPeer: string, serializedUcan: string): Promise<boolean> {
+    let ucan: UCAN;
+    try {
+      ucan = JSON.parse(serializedUcan);
+    } catch {
+      return false;
+    }
+
+    const isValid = await this.auth.verifyUCAN(ucan, undefined, this.appOwnerDid);
+    if (!isValid) {
+      console.warn(`Invalid capability from peer ${fromPeer}`);
+      return false;
+    }
+
+    this.peerCapabilities.set(fromPeer, {
+      ucan,
+      expiresAt: ucan.exp * 1000,
+    });
+    return true;
+  }
+
+  // [UCAN] Check if a peer has a required permission on a collection
+  private async checkRemotePermission(
+    peerId: string,
+    collectionName: string,
+    action: "read" | "write" | "create" | "delete" | "sync"
+  ): Promise<boolean> {
+    const entry = this.peerCapabilities.get(peerId);
+    if (!entry) return false;
+    if (Date.now() > entry.expiresAt) {
+      this.peerCapabilities.delete(peerId);
+      return false;
+    }
+
+    const capabilities = this.auth.getCapabilities(entry.ucan);
+    const resource = `zerithdb://${this.config.appId}/${collectionName}`;
+    return capabilities.some(cap => allowsAction(cap, resource, action));
+  }
+
   private onPeerUpdate(msg: { type: string; payload: Uint8Array | string; from: string }): void {
+    // [UCAN] Handle capability exchange
+    if (msg.type === "capability") {
+      const payloadStr = typeof msg.payload === "string" ? msg.payload : new TextDecoder().decode(msg.payload);
+      void this.handleCapability(msg.from, payloadStr);
+      return;
+    }
+
     if (msg.type === "sync-upgrade-offer") {
       const payloadStr =
         typeof msg.payload === "string" ? msg.payload : new TextDecoder().decode(msg.payload);
       const offer = JSON.parse(payloadStr) as { pluginUrl: string; version: number };
-
-      // Auto-accept and load for this MVP.
       this.loadPlugin(offer.pluginUrl)
         .then(() => {
           this.network.sendTo(msg.from, {
@@ -306,9 +356,7 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
           });
         })
         .catch(() => {
-          console.warn(
-            `Peer ${msg.from} failed to upgrade. Disconnecting is currently not natively supported in NetworkManager's public API directly from SyncEngine, but we will ignore their updates.`
-          );
+          console.warn(`Peer ${msg.from} failed to upgrade. Ignoring their updates.`);
         });
       return;
     }
@@ -317,32 +365,19 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
       return;
     }
 
-    if (msg.type === "sync-request") {
-      const payload = typeof msg.payload === "string" ? base64ToBytes(msg.payload) : msg.payload;
-      const decoded = this.decodeMessage(payload);
-      if (decoded === null) return;
-
-      const doc = this.getDoc(decoded.collectionName);
-      const diff = Y.encodeStateAsUpdate(doc, decoded.update);
-      this.network.sendTo(msg.from, {
-        type: "sync-update",
-        payload: this.encodeMessage(decoded.collectionName, diff),
-      });
-      return;
-    }
-
     if (msg.type !== "sync-update") return;
 
     const payload = typeof msg.payload === "string" ? base64ToBytes(msg.payload) : msg.payload;
-
     const decoded = this.decodeMessage(payload);
     if (decoded === null) return;
 
     void this.applyRemoteUpdate(decoded.collectionName, decoded.update, msg.from);
   }
 
-  private onPeerConnected(peer?: { peerId: string }): void {
+  private onPeerConnected(peer: { peerId: string }): void {
+  const peerId = peer.peerId;
     this.updateState({ connectedPeers: this.network.connectedPeerCount });
+    void this.sendCapability(peerId);
     void this.flushOutbox();
 
     if (peer?.peerId) {
@@ -356,7 +391,9 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
     }
   }
 
-  private onPeerDisconnected(): void {
+  private onPeerDisconnected(peer: { peerId: string }): void {
+  const peerId = peer.peerId;
+    this.peerCapabilities.delete(peerId);
     this.updateState({ connectedPeers: this.network.connectedPeerCount });
   }
 
@@ -366,7 +403,7 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
       for (const plugin of this.plugins.values()) {
         if (plugin.onBeforeSendUpdate) {
           finalUpdate = await plugin.onBeforeSendUpdate(collectionName, finalUpdate);
-          if (!finalUpdate) return; // Drop update
+          if (!finalUpdate) return;
         }
       }
 
@@ -388,7 +425,7 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
 
       await this.outbox.acknowledge(mutation.id);
     } catch {
-      // Swallow queue errors to avoid breaking update propagation.
+      // Swallow queue errors
     }
   }
 
@@ -440,7 +477,6 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
 
   private encodeMessage(collectionName: string, update: Uint8Array): string {
     const nameBytes = new TextEncoder().encode(collectionName);
-    // Use 2-byte big-endian header to support collection names up to 65535 bytes
     const header = new Uint8Array(2);
     header[0] = (nameBytes.length >> 8) & 0xff;
     header[1] = nameBytes.length & 0xff;
@@ -457,7 +493,6 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
   } | null {
     try {
       if (bytes.length < 2) return null;
-      // Read 2-byte big-endian name length
       const nameLen = (bytes[0]! << 8) | bytes[1]!;
       if (bytes.length < 2 + nameLen) return null;
       const nameBytes = bytes.slice(2, 2 + nameLen);
@@ -481,5 +516,3 @@ doc.on("update", (update: Uint8Array, origin: unknown) => {
     this.updateState({ pendingUpdates: pending });
   }
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────

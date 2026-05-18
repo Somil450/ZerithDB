@@ -12,8 +12,7 @@ import type { SignalingTransport } from "./signaling-transport.js";
 import { WebSocketTransport } from "./transports/websocket-transport.js";
 import { PollingTransport } from "./transports/polling-transport.js";
 import { NameRegistry } from "./name-registry.js";
-import { MockENSResolver } from "./ens-resolver";
-import { fetchSignalingProofOfWork } from "./pow.js";
+import { MockENSResolver } from "./ens-resolver.js";
 
 export interface WebRtcBufferStats {
   peerCount: number;

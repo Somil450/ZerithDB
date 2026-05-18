@@ -128,7 +128,15 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
   const auth = new AuthManager(resolvedConfig);
   const db = new DbClient(resolvedConfig, auth);
   const network = new NetworkManager(resolvedConfig, auth);
-  const sync = new SyncEngine(resolvedConfig, db, network);
+  let syncInstance: SyncEngine | null = null;
+
+  const getSync = () => {
+    if (!syncInstance) {
+      syncInstance = new SyncEngine(resolvedConfig, db, network, auth);
+    }
+
+    return syncInstance;
+  };
 
   let memoryCollector: MemoryCollector | null = null;
   if (resolvedConfig.debug?.devtools === true) {
@@ -160,7 +168,9 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
       return db.collection<T>(name);
     },
 
-    sync,
+    get sync() {
+      return getSync();
+    },
     auth,
     network,
 
@@ -174,7 +184,11 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
       memoryCollector?.stop();
       await Promise.all(Array.from(backupAdapters).map((a) => a.stop()));
       backupAdapters.clear();
-      await Promise.all([sync.dispose(), network.dispose(), db.dispose()]);
+      if (syncInstance) {
+        await syncInstance.dispose();
+      }
+
+      await Promise.all([network.dispose(), db.dispose()]);
     },
   };
 }
