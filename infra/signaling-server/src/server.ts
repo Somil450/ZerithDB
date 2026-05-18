@@ -1,63 +1,61 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { verify, type JwtPayload } from "jsonwebtoken";
+import { verify, sign, type JwtPayload } from "jsonwebtoken";
+import * as crypto from "crypto";
 import {
-  calculatePowDifficulty,
-  createPowChallenge,
-  FixedWindowRateLimiter,
-  verifyPowSolution,
-  type PowSolutionInput,
-} from "./pow.js";
+  registerStateProviders,
+  recordPeerJoined,
+  recordPeerLeft,
+  recordMessageRelayed,
+} from "./internal/metrics.js";
+import { ADMIN_DASHBOARD_HTML } from "./internal/dashboard-html.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4000", 10);
 const HOST = process.env["HOST"] ?? "0.0.0.0";
 const JWT_SECRET = process.env["JWT_SECRET"] ?? "";
-const POW_ENABLED = process.env["POW_ENABLED"] !== "false";
-const POW_SECRET = process.env["POW_SECRET"] || JWT_SECRET || crypto.randomUUID();
-const POW_BASE_DIFFICULTY = readIntegerEnv("POW_BASE_DIFFICULTY", 12);
-const POW_MAX_DIFFICULTY = readIntegerEnv("POW_MAX_DIFFICULTY", 24);
-const POW_LOAD_STEP = readIntegerEnv("POW_LOAD_STEP", 25);
-const POW_THREAT_LEVEL = readIntegerEnv("POW_THREAT_LEVEL", 0);
-const POW_CHALLENGE_TTL_MS = readIntegerEnv("POW_CHALLENGE_TTL_MS", 60_000);
-const POW_CHALLENGE_RATE_LIMIT = readIntegerEnv("POW_CHALLENGE_RATE_LIMIT", 120);
-const POW_CHALLENGE_RATE_WINDOW_MS = readIntegerEnv("POW_CHALLENGE_RATE_WINDOW_MS", 60_000);
-const POW_TRUST_X_FORWARDED_FOR = process.env["POW_TRUST_X_FORWARDED_FOR"] === "true";
+
+// Admin Settings
+const ADMIN_USER = process.env["ADMIN_USER"] ?? "admin";
+const ADMIN_PASSWORD = process.env["ADMIN_PASSWORD"] ?? "admin";
+const ADMIN_JWT_SECRET =
+  process.env["ADMIN_JWT_SECRET"] ?? "zerith-godmode-admin-jwt-secret-key-12345";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const validLogLevels: LogLevel[] = ["debug", "info", "warn", "error"];
-
 const envLogLevel = process.env["LOG_LEVEL"];
 
 const LOG_LEVEL: LogLevel =
   envLogLevel && validLogLevels.includes(envLogLevel as LogLevel)
     ? (envLogLevel as LogLevel)
     : "info";
+
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
   warn: 2,
   error: 3,
 };
+
 const shouldLog = (level: LogLevel): boolean => {
   return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[LOG_LEVEL];
 };
+
 const logger = {
   debug: (...args: unknown[]) => {
     if (shouldLog("debug")) console.debug(...args);
   },
-
   info: (...args: unknown[]) => {
     if (shouldLog("info")) console.info(...args);
   },
-
   warn: (...args: unknown[]) => {
     if (shouldLog("warn")) console.warn(...args);
   },
-
   error: (...args: unknown[]) => {
     if (shouldLog("error")) console.error(...args);
   },
 };
+
 const SERVER_START_TIME = Date.now();
 
 // ─── Shared room state ──────────────────────────────────────────────────────
@@ -66,6 +64,8 @@ interface PeerEntry {
   peerId: string;
   ws?: WebSocket; // present for WebSocket peers
   sessionId?: string; // present for polling peers
+  ip: string;
+  joinedAt: number;
 }
 
 // roomId → Set of PeerEntry
@@ -103,7 +103,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [sessionId, session] of pollingSessions) {
     if (now - session.lastActivity > SESSION_TIMEOUT_MS) {
-      cleanupPollingSession(sessionId);
+      cleanupPollingSession(sessionId, "timeout");
     }
   }
   cleanupUsedPowSolutions(now);
@@ -124,13 +124,255 @@ function verifyRoomToken(token: string | null, roomId: string): string | null {
   }
 }
 
+// ─── Real-Time Statistics & Blocklists ─────────────────────────────────────
+
+const blocklistedPeers = new Set<string>();
+const blocklistedIps = new Set<string>();
+const adminWebSockets = new Set<WebSocket>();
+const adminLogs: Array<{ timestamp: string; message: string }> = [];
+
+const stats = {
+  totalMessagesReceived: 0,
+  totalMessagesSent: 0,
+  totalBandwidthBytesReceived: 0,
+  totalBandwidthBytesSent: 0,
+  totalConnectionsOpened: 0,
+  totalConnectionsClosed: 0,
+  totalErrors: 0,
+  totalAuthFailures: 0,
+  invalidMessagesReceived: 0,
+};
+
+function logAdminAction(message: string): void {
+  adminLogs.unshift({
+    timestamp: new Date().toISOString(),
+    message,
+  });
+  if (adminLogs.length > 50) {
+    adminLogs.pop();
+  }
+  notifyAdminTelemetry();
+}
+
+function getTelemetryData() {
+  const roomList = [...rooms.entries()].map(([roomId, peerEntries]) => {
+    return {
+      roomId,
+      peers: [...peerEntries].map((p) => ({
+        peerId: p.peerId,
+        transport: p.ws ? "ws" : "poll",
+        ip: p.ip,
+        joinedAt: p.joinedAt,
+      })),
+    };
+  });
+
+  return {
+    uptime: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
+    rooms: roomList,
+    stats: { ...stats },
+    blocklist: {
+      peers: [...blocklistedPeers],
+      ips: [...blocklistedIps],
+    },
+    logs: [...adminLogs],
+  };
+}
+
+function notifyAdminTelemetry(): void {
+  const serialized = JSON.stringify({
+    type: "telemetry",
+    payload: getTelemetryData(),
+  });
+
+  for (const adminWs of adminWebSockets) {
+    if (adminWs.readyState === WebSocket.OPEN) {
+      try {
+        adminWs.send(serialized);
+      } catch {
+        adminWebSockets.delete(adminWs);
+      }
+    }
+  }
+}
+
+// Automatically sync telemetries every 2 seconds to keep graphs alive
+setInterval(() => {
+  notifyAdminTelemetry();
+}, 2000);
+
+// Register OTel state providers
+registerStateProviders({
+  getRoomCount: () => rooms.size,
+  getPeerCount: () => [...rooms.values()].reduce((acc, s) => acc + s.size, 0),
+  getPollingSessionCount: () => pollingSessions.size,
+});
+
+// Prometheus Metrics Formatter
+function getPrometheusMetrics(): string {
+  const activePeers = [...rooms.values()].reduce((acc, s) => acc + s.size, 0);
+  const activeRooms = rooms.size;
+  const activePollSessions = pollingSessions.size;
+  const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
+  const mem = process.memoryUsage();
+
+  return `# HELP zerithdb_signaling_peers_active Number of currently connected peers
+# TYPE zerithdb_signaling_peers_active gauge
+zerithdb_signaling_peers_active ${activePeers}
+
+# HELP zerithdb_signaling_rooms_active Number of currently active rooms
+# TYPE zerithdb_signaling_rooms_active gauge
+zerithdb_signaling_rooms_active ${activeRooms}
+
+# HELP zerithdb_signaling_polling_sessions_active Number of currently active polling sessions
+# TYPE zerithdb_signaling_polling_sessions_active gauge
+zerithdb_signaling_polling_sessions_active ${activePollSessions}
+
+# HELP zerithdb_signaling_messages_received_total Total messages received by the signaling server
+# TYPE zerithdb_signaling_messages_received_total counter
+zerithdb_signaling_messages_received_total ${stats.totalMessagesReceived}
+
+# HELP zerithdb_signaling_messages_sent_total Total messages sent by the signaling server
+# TYPE zerithdb_signaling_messages_sent_total counter
+zerithdb_signaling_messages_sent_total ${stats.totalMessagesSent}
+
+# HELP zerithdb_signaling_bandwidth_bytes_received_total Total bandwidth bytes received
+# TYPE zerithdb_signaling_bandwidth_bytes_received_total counter
+zerithdb_signaling_bandwidth_bytes_received_total ${stats.totalBandwidthBytesReceived}
+
+# HELP zerithdb_signaling_bandwidth_bytes_sent_total Total bandwidth bytes sent
+# TYPE zerithdb_signaling_bandwidth_bytes_sent_total counter
+zerithdb_signaling_bandwidth_bytes_sent_total ${stats.totalBandwidthBytesSent}
+
+# HELP zerithdb_signaling_connections_opened_total Total connection attempts opened
+# TYPE zerithdb_signaling_connections_opened_total counter
+zerithdb_signaling_connections_opened_total ${stats.totalConnectionsOpened}
+
+# HELP zerithdb_signaling_connections_closed_total Total connection closed
+# TYPE zerithdb_signaling_connections_closed_total counter
+zerithdb_signaling_connections_closed_total ${stats.totalConnectionsClosed}
+
+# HELP zerithdb_signaling_errors_total Total errors encountered
+# TYPE zerithdb_signaling_errors_total counter
+zerithdb_signaling_errors_total ${stats.totalErrors}
+
+# HELP zerithdb_signaling_auth_failures_total Total authentication failures encountered
+# TYPE zerithdb_signaling_auth_failures_total counter
+zerithdb_signaling_auth_failures_total ${stats.totalAuthFailures}
+
+# HELP process_resident_memory_bytes Resident memory size in bytes
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes ${mem.rss}
+
+# HELP process_uptime_seconds Process uptime in seconds
+# TYPE process_uptime_seconds counter
+process_uptime_seconds ${uptimeSeconds}
+`;
+}
+
+// Administrative Action Handlers
+function broadcastAnnouncement(message: string, targetRoomId?: string): void {
+  const packet = {
+    type: "announcement",
+    from: "server",
+    payload: message,
+  };
+
+  const serialized = JSON.stringify(packet);
+
+  if (targetRoomId) {
+    const room = rooms.get(targetRoomId);
+    if (room) {
+      for (const peer of room) {
+        deliverToPeer(peer, serialized);
+      }
+    }
+  } else {
+    for (const room of rooms.values()) {
+      for (const peer of room) {
+        deliverToPeer(peer, serialized);
+      }
+    }
+  }
+}
+
+function forceDisconnectPeer(peerId: string): boolean {
+  let disconnected = false;
+
+  // 1. Search in polling sessions
+  for (const [sessionId, session] of pollingSessions.entries()) {
+    if (session.peerId === peerId) {
+      cleanupPollingSession(sessionId, "error");
+      disconnected = true;
+    }
+  }
+
+  // 2. Search in rooms
+  for (const [roomId, room] of rooms.entries()) {
+    for (const peer of room) {
+      if (peer.peerId === peerId) {
+        if (peer.ws) {
+          try {
+            peer.ws.close(4000, "Forcefully disconnected by administrator");
+          } catch {
+            // Ignore
+          }
+          disconnected = true;
+        }
+        room.delete(peer);
+      }
+    }
+    if (room.size === 0) {
+      rooms.delete(roomId);
+    }
+  }
+
+  notifyAdminTelemetry();
+  return disconnected;
+}
+
+function banPeer(peerId: string, ipToBan?: string): void {
+  blocklistedPeers.add(peerId);
+  if (ipToBan && ipToBan !== "unknown") {
+    blocklistedIps.add(ipToBan);
+  }
+
+  // Disconnect target peer
+  forceDisconnectPeer(peerId);
+
+  // If IP banned, disconnect any other peers on the same IP
+  if (ipToBan && ipToBan !== "unknown") {
+    for (const [roomId, room] of rooms.entries()) {
+      for (const peer of room) {
+        if (peer.ip === ipToBan) {
+          if (peer.ws) {
+            try {
+              peer.ws.close(4003, "IP banned by administrator");
+            } catch {
+              // Ignore
+            }
+          } else if (peer.sessionId) {
+            cleanupPollingSession(peer.sessionId, "error");
+          }
+          room.delete(peer);
+        }
+      }
+      if (room.size === 0) {
+        rooms.delete(roomId);
+      }
+    }
+  }
+
+  notifyAdminTelemetry();
+}
+
 // ─── HTTP server ────────────────────────────────────────────────────────────
 
 const server = createServer((req, res) => {
-  // CORS headers for polling requests from browsers
+  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -140,6 +382,49 @@ const server = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
+
+  // Serve "God Mode" dashboard
+  if (pathname === "/admin" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(ADMIN_DASHBOARD_HTML);
+    return;
+  }
+
+  // Admin login API
+  if (pathname === "/admin/login" && req.method === "POST") {
+    readJsonBody(req, (err, body) => {
+      if (err || !body?.username || !body?.password) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Missing username or password" }));
+        stats.totalErrors++;
+        return;
+      }
+
+      if (body.username === ADMIN_USER && body.password === ADMIN_PASSWORD) {
+        const token = sign({ role: "admin" }, ADMIN_JWT_SECRET, { expiresIn: "24h" });
+
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": `admin_token=${token}; Path=/; HttpOnly; Max-Age=86400`,
+        });
+        res.end(JSON.stringify({ token }));
+        logAdminAction(`Successfully authenticated administrative user '${ADMIN_USER}'`);
+      } else {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid credentials" }));
+        stats.totalAuthFailures++;
+        stats.totalErrors++;
+      }
+    });
+    return;
+  }
+
+  // Prometheus scrape endpoint
+  if (pathname === "/metrics" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(getPrometheusMetrics());
+    return;
+  }
 
   // Health check (existing behavior)
   if ((pathname === "/" || pathname === "/health") && req.method === "GET") {
@@ -152,7 +437,7 @@ const server = createServer((req, res) => {
         service: "zerithdb-signaling",
         version: "0.1.0",
         uptime_seconds: uptimeSeconds,
-        active_ws_connections: wss.clients.size,
+        active_ws_connections: wss.clients.size - adminWebSockets.size,
         active_polling_sessions: pollingSessions.size,
         rooms: rooms.size,
         peers: [...rooms.values()].reduce((acc, s) => acc + s.size, 0),
@@ -204,17 +489,39 @@ const server = createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws, req) => {
-  // Use a dummy base for parsing relative URLs
   const url = new URL(req.url ?? "/", "http://localhost");
+  const pathname = url.pathname;
+
+  // Route Admin Telemetry WS Connection
+  if (pathname === "/admin/ws" || pathname === "/admin/telemetry") {
+    handleAdminWs(ws, req);
+    return;
+  }
+
   const roomId = url.searchParams.get("room");
   const peerId = url.searchParams.get("peer");
   const token: string | null = url.searchParams.get("token");
-  const powChallenge = url.searchParams.get("powChallenge");
-  const powNonce = url.searchParams.get("powNonce");
+  const clientIp = req.socket.remoteAddress ?? "unknown";
+
+  // Check Blocklists
+  if (peerId && blocklistedPeers.has(peerId)) {
+    logger.warn(`[!] Rejected blocked peer=${peerId} connection attempt`);
+    ws.close(4003, "Peer is banned by administrator");
+    stats.totalErrors++;
+    return;
+  }
+
+  if (clientIp !== "unknown" && blocklistedIps.has(clientIp)) {
+    logger.warn(`[!] Rejected blocked IP=${clientIp} connection attempt`);
+    ws.close(4003, "IP is banned by administrator");
+    stats.totalErrors++;
+    return;
+  }
 
   if (!roomId || !peerId) {
     logger.warn(`[!] Rejected connection from ${req.socket.remoteAddress}: missing params`);
     ws.close(1008, "Missing room or peer query parameters");
+    stats.totalErrors++;
     return;
   }
 
@@ -222,6 +529,8 @@ wss.on("connection", (ws, req) => {
   if (authError) {
     console.log(`[!] Rejected connection from peer=${peerId}: ${authError}`);
     ws.close(1008, authError);
+    stats.totalAuthFailures++;
+    stats.totalErrors++;
     return;
   }
 
@@ -239,8 +548,17 @@ wss.on("connection", (ws, req) => {
   const room = rooms.get(roomId)!;
 
   // Add peer to room
-  const peerEntry: PeerEntry = { peerId, ws };
+  const peerEntry: PeerEntry = {
+    peerId,
+    ws,
+    ip: clientIp,
+    joinedAt: Date.now(),
+  };
   room.add(peerEntry);
+
+  stats.totalConnectionsOpened++;
+  recordPeerJoined("ws");
+  notifyAdminTelemetry();
 
   logger.info(`[+] peer=${peerId} joined room=${roomId} (room size: ${room.size})`);
   logger.info(`[+] peer=${peerId} joined room=${roomId} via WebSocket (room size: ${room.size})`);
@@ -253,23 +571,37 @@ wss.on("connection", (ws, req) => {
   // Relay messages between peers
   ws.on("message", (data) => {
     logger.debug(`[MESSAGE] peer=${peerId} room=${roomId}`);
+
+    // Track metrics
+    const bytes = data.toString().length;
+    stats.totalMessagesReceived++;
+    stats.totalBandwidthBytesReceived += bytes;
+
     let msg: { to?: string; from?: string; [key: string]: unknown };
     try {
       msg = JSON.parse(data.toString());
     } catch {
       logger.warn(`[!] Invalid message from peer=${peerId}`);
+      stats.invalidMessagesReceived++;
+      stats.totalErrors++;
       return;
     }
 
     // Stamp the sender
     msg.from = peerId;
 
-    relayMessage(roomId, peerId, msg);
+    relayMessage(roomId, peerId, msg, "ws");
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code) => {
     room.delete(peerEntry);
     logger.info(`[-] peer=${peerId} left room=${roomId} (room size: ${room.size})`);
+
+    stats.totalConnectionsClosed++;
+    const isGraceful = code === 1000 || code === 1001 || code === 1005;
+    recordPeerLeft("ws", isGraceful ? "graceful" : "error");
+    notifyAdminTelemetry();
+
     // Clean up empty rooms
     if (room.size === 0) {
       rooms.delete(roomId);
@@ -286,8 +618,118 @@ wss.on("connection", (ws, req) => {
   ws.on("error", (err) => {
     logger.error(`[!] peer=${peerId} error=${err.message}`);
     room.delete(peerEntry);
+    stats.totalErrors++;
   });
 });
+
+// Admin WebSocket Telemetry logic
+function handleAdminWs(ws: WebSocket, req: IncomingMessage): void {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const token = url.searchParams.get("token");
+
+  // Extract token from cookies
+  let cookieToken = "";
+  const cookieHeader = req.headers.cookie ?? "";
+  const match = cookieHeader.match(/admin_token=([^;]+)/);
+  if (match) {
+    cookieToken = match[1];
+  }
+
+  const finalToken = token ?? cookieToken;
+
+  try {
+    if (!finalToken) throw new Error("Missing credentials");
+    const payload = verify(finalToken, ADMIN_JWT_SECRET) as JwtPayload;
+    if (payload.role !== "admin") throw new Error("Unauthorized role");
+  } catch (err) {
+    ws.close(4001, "Unauthorized Admin Access");
+    return;
+  }
+
+  adminWebSockets.add(ws);
+
+  // Deliver initial live state
+  ws.send(
+    JSON.stringify({
+      type: "telemetry",
+      payload: getTelemetryData(),
+    })
+  );
+
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      handleAdminCommand(msg, ws);
+    } catch {
+      // Ignore malformed commands
+    }
+  });
+
+  ws.on("close", () => {
+    adminWebSockets.delete(ws);
+  });
+
+  ws.on("error", () => {
+    adminWebSockets.delete(ws);
+  });
+}
+
+function handleAdminCommand(msg: any, ws: WebSocket): void {
+  const { type, payload } = msg;
+
+  switch (type) {
+    case "broadcast":
+      if (payload && typeof payload.message === "string") {
+        broadcastAnnouncement(payload.message, payload.roomId);
+        logAdminAction(
+          `Broadcast announcement: "${payload.message}"` +
+            (payload.roomId ? ` to room ${payload.roomId}` : " globally")
+        );
+      }
+      break;
+
+    case "disconnect":
+      if (payload && typeof payload.peerId === "string") {
+        const success = forceDisconnectPeer(payload.peerId);
+        if (success) {
+          logAdminAction(`Force disconnected peer: ${payload.peerId}`);
+        }
+      }
+      break;
+
+    case "ban":
+      if (payload && typeof payload.peerId === "string") {
+        let peerIp: string | undefined;
+        for (const room of rooms.values()) {
+          for (const peer of room) {
+            if (peer.peerId === payload.peerId) {
+              peerIp = peer.ip;
+              break;
+            }
+          }
+        }
+
+        banPeer(payload.peerId, payload.banIp ? peerIp : undefined);
+        logAdminAction(
+          `Banned peer: ${payload.peerId}` + (payload.banIp && peerIp ? ` and IP: ${peerIp}` : "")
+        );
+      }
+      break;
+
+    case "unban":
+      if (payload && typeof payload.value === "string") {
+        if (payload.type === "peer") {
+          blocklistedPeers.delete(payload.value);
+          logAdminAction(`Unbanned peer: ${payload.value}`);
+        } else if (payload.type === "ip") {
+          blocklistedIps.delete(payload.value);
+          logAdminAction(`Unbanned IP: ${payload.value}`);
+        }
+        notifyAdminTelemetry();
+      }
+      break;
+  }
+}
 
 // ─── Shared relay logic ─────────────────────────────────────────────────────
 
@@ -299,32 +741,30 @@ wss.on("connection", (ws, req) => {
 function relayMessage(
   roomId: string,
   senderPeerId: string,
-  msg: { to?: string; from?: string; [key: string]: unknown }
+  msg: { to?: string; from?: string; [key: string]: unknown },
+  senderTransport: "ws" | "poll"
 ): void {
   const room = rooms.get(roomId);
   if (!room) return;
 
   const serialized = JSON.stringify(msg);
+  const isUnicast = msg.to !== undefined;
 
-  if (msg.to !== undefined) {
-    // Log unicast messaging details for debugging (Safely handle optional msg.to)
+  if (isUnicast) {
     logger.debug(`[UNICAST] from=${senderPeerId} to=${msg.to ?? "unknown"}`);
-
-    // Unicast to a specific peer
     for (const peer of room) {
       if (peer.peerId === msg.to) {
         deliverToPeer(peer, serialized);
+        recordMessageRelayed("unicast", senderTransport);
         break;
       }
     }
   } else {
-    // Log broadcast messaging details for debugging
     logger.debug(`[BROADCAST] from=${senderPeerId} room=${roomId}`);
-
-    // Broadcast to all peers except sender
     for (const peer of room) {
       if (peer.peerId !== senderPeerId) {
         deliverToPeer(peer, serialized);
+        recordMessageRelayed("broadcast", senderTransport);
       }
     }
   }
@@ -353,12 +793,21 @@ function broadcastToRoom(
  * Deliver a serialized message to a peer, whether WebSocket or polling.
  */
 function deliverToPeer(peer: PeerEntry, serialized: string): void {
+  const bytes = serialized.length;
   if (peer.ws && peer.ws.readyState === WebSocket.OPEN) {
-    peer.ws.send(serialized);
+    try {
+      peer.ws.send(serialized);
+      stats.totalMessagesSent++;
+      stats.totalBandwidthBytesSent += bytes;
+    } catch {
+      stats.totalErrors++;
+    }
   } else if (peer.sessionId) {
     const session = pollingSessions.get(peer.sessionId);
     if (session) {
       enqueuePollingMessage(session, serialized);
+      stats.totalMessagesSent++;
+      stats.totalBandwidthBytesSent += bytes;
     }
   }
 }
@@ -371,68 +820,84 @@ function deliverToPeer(peer: PeerEntry, serialized: string): void {
  * Response: { sessionId: string, peerList: string[] }
  */
 function handlePollJoin(req: IncomingMessage, res: ServerResponse): void {
-  readJsonBody(
-    req,
-    (
-      err,
-      body: { room?: string; peer?: string; token?: string; pow?: PowSolutionInput } | null
-    ) => {
-      if (err || !body?.room || !body?.peer) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Missing room or peer" }));
-        return;
-      }
-
-      const authError = verifyRoomToken(body.token ?? null, body.room);
-      if (authError) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: authError }));
-        return;
-      }
-
-      const powError = verifyRequestPow(body.pow, body.room, body.peer);
-      if (powError) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: powError }));
-        return;
-      }
-
-      const { room: roomId, peer: peerId } = body;
-      const sessionId = crypto.randomUUID();
-
-      // Ensure room exists
-      if (!rooms.has(roomId)) {
-        rooms.set(roomId, new Set());
-      }
-      const room = rooms.get(roomId)!;
-
-      // Build peer list BEFORE adding this peer
-      const peerList = [...room].filter((p) => p.peerId !== peerId).map((p) => p.peerId);
-
-      // Create session
-      const session: PollingSession = {
-        sessionId,
-        peerId,
-        roomId,
-        messageQueue: [],
-        pendingResponse: null,
-        lastActivity: Date.now(),
-      };
-      pollingSessions.set(sessionId, session);
-
-      // Add peer to room
-      const peerEntry: PeerEntry = { peerId, sessionId };
-      room.add(peerEntry);
-
-      console.log(
-        `[+] peer=${peerId} joined room=${roomId} via HTTP polling ` +
-          `(session=${sessionId.slice(0, 8)}…, room size: ${room.size})`
-      );
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ sessionId, peerList }));
+  readJsonBody(req, (err, body: { room?: string; peer?: string; token?: string } | null) => {
+    if (err || !body?.room || !body?.peer) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing room or peer" }));
+      stats.totalErrors++;
+      return;
     }
-  );
+
+    const clientIp = req.socket.remoteAddress ?? "unknown";
+
+    // Check Blocklists
+    if (blocklistedPeers.has(body.peer)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Peer is banned by administrator" }));
+      stats.totalErrors++;
+      return;
+    }
+
+    if (clientIp !== "unknown" && blocklistedIps.has(clientIp)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "IP is banned by administrator" }));
+      stats.totalErrors++;
+      return;
+    }
+
+    const authError = verifyRoomToken(body.token ?? null, body.room);
+    if (authError) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: authError }));
+      stats.totalAuthFailures++;
+      stats.totalErrors++;
+      return;
+    }
+
+    const { room: roomId, peer: peerId } = body;
+    const sessionId = crypto.randomUUID();
+
+    // Ensure room exists
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, new Set());
+    }
+    const room = rooms.get(roomId)!;
+
+    // Build peer list BEFORE adding this peer
+    const peerList = [...room].filter((p) => p.peerId !== peerId).map((p) => p.peerId);
+
+    // Create session
+    const session: PollingSession = {
+      sessionId,
+      peerId,
+      roomId,
+      messageQueue: [],
+      pendingResponse: null,
+      lastActivity: Date.now(),
+    };
+    pollingSessions.set(sessionId, session);
+
+    // Add peer to room
+    const peerEntry: PeerEntry = {
+      peerId,
+      sessionId,
+      ip: clientIp,
+      joinedAt: Date.now(),
+    };
+    room.add(peerEntry);
+
+    stats.totalConnectionsOpened++;
+    recordPeerJoined("poll");
+    notifyAdminTelemetry();
+
+    console.log(
+      `[+] peer=${peerId} joined room=${roomId} via HTTP polling ` +
+        `(session=${sessionId.slice(0, 8)}…, room size: ${room.size})`
+    );
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ sessionId, peerList }));
+  });
 }
 
 /**
@@ -447,6 +912,7 @@ function handlePollMessages(url: URL, res: ServerResponse): void {
   if (!sessionId || !roomId) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Missing session or room" }));
+    stats.totalErrors++;
     return;
   }
 
@@ -454,6 +920,7 @@ function handlePollMessages(url: URL, res: ServerResponse): void {
   if (!session || session.roomId !== roomId) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Session not found" }));
+    stats.totalErrors++;
     return;
   }
 
@@ -497,6 +964,7 @@ function handlePollSend(req: IncomingMessage, res: ServerResponse): void {
     if (err || !body?.session || !body?.room || !body?.message) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Missing session, room, or message" }));
+      stats.totalErrors++;
       return;
     }
 
@@ -504,16 +972,22 @@ function handlePollSend(req: IncomingMessage, res: ServerResponse): void {
     if (!session || session.roomId !== body.room) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Session not found" }));
+      stats.totalErrors++;
       return;
     }
 
     session.lastActivity = Date.now();
 
+    // Track metrics
+    const bytes = JSON.stringify(body.message).length;
+    stats.totalMessagesReceived++;
+    stats.totalBandwidthBytesReceived += bytes;
+
     // Stamp the sender
     const msg = body.message;
     msg.from = session.peerId;
 
-    relayMessage(body.room, session.peerId, msg);
+    relayMessage(body.room, session.peerId, msg, "poll");
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
@@ -530,10 +1004,11 @@ function handlePollLeave(req: IncomingMessage, res: ServerResponse): void {
     if (err || !body?.session || !body?.room) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Missing session or room" }));
+      stats.totalErrors++;
       return;
     }
 
-    cleanupPollingSession(body.session);
+    cleanupPollingSession(body.session, "graceful");
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
@@ -562,7 +1037,10 @@ function enqueuePollingMessage(session: PollingSession, serialized: string): voi
 /**
  * Clean up a polling session: remove from room, notify peers, delete state.
  */
-function cleanupPollingSession(sessionId: string): void {
+function cleanupPollingSession(
+  sessionId: string,
+  reason: "graceful" | "timeout" | "error" = "timeout"
+): void {
   const session = pollingSessions.get(sessionId);
   if (!session) return;
 
@@ -601,8 +1079,15 @@ function cleanupPollingSession(sessionId: string): void {
   }
 
   pollingSessions.delete(sessionId);
+  stats.totalConnectionsClosed++;
+
+  const oTelReason =
+    reason === "timeout" ? "timeout" : reason === "graceful" ? "graceful" : "error";
+  recordPeerLeft("poll", oTelReason);
+  notifyAdminTelemetry();
+
   console.log(
-    `[-] peer=${peerId} left room=${roomId} via session cleanup ` +
+    `[-] peer=${peerId} left room=${roomId} via session cleanup (reason: ${reason}) ` +
       `(session=${sessionId.slice(0, 8)}…)`
   );
 }
@@ -727,6 +1212,8 @@ server.listen(PORT, HOST, () => {
   logger.info(`🚀 ZerithDB Signaling Server running at ws://${HOST}:${PORT}`);
   logger.info(`   HTTP health check: http://${HOST}:${PORT}`);
   logger.info(`   HTTP long-polling: http://${HOST}:${PORT}/poll/*`);
+  logger.info(`   God Mode Dashboard: http://${HOST}:${PORT}/admin`);
+  logger.info(`   Prometheus endpoint: http://${HOST}:${PORT}/metrics`);
 });
 
 // Graceful shutdown
@@ -734,7 +1221,22 @@ process.on("SIGTERM", () => {
   logger.info("Shutting down signaling server...");
   // Clean up all polling sessions
   for (const [sessionId] of pollingSessions) {
-    cleanupPollingSession(sessionId);
+    cleanupPollingSession(sessionId, "error");
   }
   wss.close(() => server.close(() => process.exit(0)));
 });
+
+export {
+  server,
+  wss,
+  rooms,
+  pollingSessions,
+  blocklistedPeers,
+  blocklistedIps,
+  stats,
+  getTelemetryData,
+  getPrometheusMetrics,
+  broadcastAnnouncement,
+  forceDisconnectPeer,
+  banPeer,
+};

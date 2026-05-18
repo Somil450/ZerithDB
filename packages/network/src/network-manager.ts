@@ -37,6 +37,7 @@ type NetworkEvents = {
   "media:stream:removed": { peerId: PeerId; streamId: string };
   error: { peerId: PeerId; error: Error };
   "transport:downgrade": { from: "websocket"; to: "polling"; reason: string };
+  announcement: string;
 };
 
 export type MediaStreamMetadataInput = Partial<
@@ -47,7 +48,7 @@ export type MediaStreamMetadataInput = Partial<
 > & { kind?: MediaStreamKind };
 
 interface SignalingMessage {
-  type: "offer" | "answer" | "ice-candidate" | "peer-list";
+  type: "offer" | "answer" | "ice-candidate" | "peer-list" | "announcement";
   from: string;
   to?: string;
   payload: unknown;
@@ -410,6 +411,11 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
     }
 
     switch (msg.type) {
+      case "announcement":
+        console.warn(`[ZerithDB] System Announcement: ${msg.payload}`);
+        this.emit("announcement", msg.payload as string);
+        break;
+
       case "peer-list":
         for (const peerId of msg.payload as PeerId[]) {
           if (peerId !== this.localPeerId) {
