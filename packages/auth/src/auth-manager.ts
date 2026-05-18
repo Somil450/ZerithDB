@@ -255,6 +255,62 @@ export class AuthManager extends EventEmitter<AuthEvents> {
     }
   }
 
+  /**
+   * Generate recovery shares for the current identity.
+   * Uses Shamir's Secret Sharing to split the private key.
+   *
+   * @param threshold - Minimum number of shares required to recover
+   * @param total - Total number of shares to generate
+   * @returns Hex-encoded recovery shares
+   */
+  async generateRecoveryShares(threshold: number, total: number): Promise<string[]> {
+    if (this.privateKeyBytes === null) {
+      throw new ZerithDBError(ErrorCode.AUTH_KEY_NOT_FOUND, "No identity loaded.");
+    }
+
+    try {
+      const { split } = await import("./sss.js");
+      const shares = split(this.privateKeyBytes, threshold, total);
+      return shares.map((s) => bytesToHex(s));
+    } catch (err: any) {
+      throw new ZerithDBError(ErrorCode.AUTH_INVALID_SHARES, err.message, { cause: err });
+    }
+  }
+
+  /**
+   * Recover an identity from social recovery shares.
+   * If successful, the recovered identity is loaded and saved.
+   *
+   * @param shares - Hex-encoded recovery shares
+   */
+  async recoverFromShares(shares: string[]): Promise<Identity> {
+    if (shares.length < 2) {
+      throw new ZerithDBError(ErrorCode.AUTH_INVALID_SHARES, "At least 2 shares are required.");
+    }
+
+    try {
+      const { combine } = await import("./sss.js");
+      const shareBytes = shares.map((s) => hexToBytes(s));
+      const privateKey = combine(shareBytes);
+      const publicKeyBytes = await ed.getPublicKeyAsync(privateKey);
+
+      const identity = this.buildIdentity(publicKeyBytes);
+      this._identity = identity;
+      this.privateKeyBytes = privateKey;
+
+      this.saveToStorage(privateKey, publicKeyBytes);
+      return identity;
+    } catch (err) {
+      throw new ZerithDBError(
+        ErrorCode.AUTH_RECOVERY_FAILED,
+        "Failed to recover identity from shares",
+        {
+          cause: err,
+        }
+      );
+    }
+  }
+
   // ─── Private ──────────────────────────────────────────────────────────────
 
   private buildIdentity(publicKeyBytes: Uint8Array): Identity {
