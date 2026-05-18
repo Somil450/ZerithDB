@@ -12,6 +12,9 @@ import { ZerithDBError, ErrorCode } from "zerithdb-core";
 import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
 import { EventEmitter } from "zerithdb-core";
 import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
+
+const RESERVED_FIELDS = ["_id", "_createdAt", "_updatedAt"];
+
 import { GraphClient } from "./graph-client.js";
 import type { GraphNode, GraphEdge } from "zerithdb-core";
 
@@ -24,6 +27,7 @@ import { allowsAction } from "zerithdb-auth";
  * A handle to a single named collection within the ZerithDB local database.
  * All operations are async and backed by IndexedDB.
  */
+
 export class CollectionClient<T extends Record<string, any> = Record<string, any>> {
   constructor(
     private readonly table: Table<Document<T>>,
@@ -31,8 +35,31 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     private readonly notifyMutation?: () => void
   ) {}
 
+  private async checkBiometric(operationDescription: string): Promise<void> {
+    if (this.auth?.biometric?.isBiometricRequiredForDB()) {
+      const authorized = await this.auth.biometric.promptBiometric(
+        `Authorize sensitive database operation: ${operationDescription} in collection "${this.collectionName}"`
+      );
+      if (!authorized) {
+        throw new ZerithDBError(
+          ErrorCode.AUTH_SIGN_FAILED,
+          "Database operation cancelled or biometric authentication failed."
+        );
+      }
+    }
+  }
+
+  /**
+   * Subscribe to changes in the collection.
+   * Uses Dexie's liveQuery to reactively notify when documents change.
+   *
+   * @param callback - Function called with the updated list of all documents
+   * @returns An unsubscribe function
+   */
+
   subscribe(callback: (documents: Document<T>[]) => void): () => void {
     const observable = liveQuery(() => this.find());
+
     const subscription = observable.subscribe({
       next: (docs) => callback(docs),
       error: (err) =>
@@ -41,11 +68,82 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
           err
         ),
     });
+
     return () => subscription.unsubscribe();
   }
 
+  /**
+   * Insert a document if it doesn't exist, or update it if it does.
+   * Automatically manages timestamps.
+   * insted of add we use put
+   * put() inserts OR replace/update automatically
+   */
+
+  private validateDocument(document: unknown): void {
+    if (document === null || document === undefined) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
+    }
+
+    if (typeof document !== "object" || Array.isArray(document)) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document must be a valid object");
+    }
+
+    if (Object.keys(document as object).length === 0) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be empty");
+    }
+
+    for (const field of RESERVED_FIELDS) {
+      if (field in (document as Record<string, any>)) {
+        throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, `Field "${field}" is reserved`);
+      }
+    }
+  }
+
+  private validateFilter(filter: unknown): void {
+    if (!filter || typeof filter !== "object" || Array.isArray(filter)) {
+      throw new ZerithDBError(ErrorCode.DB_READ_FAILED, "Filter must be a valid object");
+    }
+  }
+
+  async upsert(document: Partial<T> & { _id?: string }): Promise<InsertResult> {
+    if (document === null || document === undefined) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
+    }
+
+    if (typeof document !== "object" || Array.isArray(document)) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document must be a valid object");
+    }
+
+    const now = Date.now();
+    const id = document._id ?? uuidv7();
+
+    const existing = await this.table.get(id);
+
+    const doc: Document<T> = {
+      ...(existing ?? {}),
+      ...document,
+      _id: id,
+      _createdAt: existing?._createdAt ?? now,
+      _updatedAt: now,
+    } as Document<T>;
+
+    return wrapIDBOperation(
+      ErrorCode.DB_WRITE_FAILED,
+      `Failed to upsert document in collection "${this.collectionName}"`,
+      async () => {
+        await this.table.put(doc);
+        return { id };
+      }
+    );
+  }
+
+  /**
+   * Insert a new document into the collection.
+   * Automatically assigns `_id`, `_createdAt`, and `_updatedAt`.
+   */
+
   async insert(document: T): Promise<InsertResult> {
-    await this.checkPermission("create");
+    this.validateDocument(document);
 
     if (document === null || document === undefined) {
       throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
@@ -62,6 +160,7 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
 
     const now = Date.now();
     const id = uuidv7();
+
     const doc: Document<T> = {
       ...docToInsert,
       _id: id,
@@ -80,38 +179,27 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  async insertMany(documents: T[]): Promise<InsertResult[]> {
-    await this.checkPermission("create");
+  /**
+   * Insert multiple documents in a single atomic operation.
+   */
 
-    if (!Array.isArray(documents) || documents.length === 0) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents must be a non-empty array");
+  async insertMany(documents: T[]): Promise<InsertResult[]> {
+    if (!Array.isArray(documents)) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents must be an array");
     }
+
+    if (documents.length === 0) {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents array cannot be empty");
+    }
+
     await this.checkBiometric("Bulk Insert Documents");
     for (const doc of documents) {
-      if (doc === null || doc === undefined) {
-        throw new ZerithDBError(
-          ErrorCode.DB_WRITE_FAILED,
-          "Documents array cannot contain null or undefined"
-        );
-      }
-    }
-
-    const processedDocs: T[] = [];
-    if (this.config?.ipfs?.enabled) {
-      const sizeThreshold = this.config.ipfs.sizeThreshold ?? 0;
-      const provider =
-        this.config.ipfs.provider ??
-        new DefaultIpfsProvider(this.config.ipfs.apiUrl, this.config.ipfs.gatewayUrl);
-      const uploadFn = (data: Blob | Uint8Array) => provider.upload(data);
-      for (const doc of documents) {
-        processedDocs.push(await uploadLargeFiles(doc, sizeThreshold, uploadFn));
-      }
-    } else {
-      processedDocs.push(...documents);
+      this.validateDocument(doc);
     }
 
     const now = Date.now();
-    const docs = processedDocs.map((doc) => ({
+
+    const docs = documents.map((doc) => ({
       ...doc,
       _id: uuidv7(),
       _createdAt: now,
@@ -139,12 +227,10 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * const high = await todos.find({ priority: { $gte: 3 } });
    * ```
    */
-  async find(
-    filter: QueryFilter<T> = {},
-    options: QueryOptions = {},
-    restoreIpfs = true
-  ): Promise<Document<T>[]> {
-    const results = await wrapIDBOperation(
+  async find(filter: QueryFilter<T> = {}, options: QueryOptions<T> = {}): Promise<Document<T>[]> {
+        this.validateFilter(filter);
+
+    return wrapIDBOperation(
       ErrorCode.DB_READ_FAILED,
       `Failed to query collection "${this.collectionName}"`,
       async () => {
@@ -196,30 +282,52 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     return results;
   }
 
+  /**
+   * Find a single document by its `_id`.
+   */
+
   async findById(id: string): Promise<Document<T> | undefined> {
-    await this.checkPermission("read");
+    if (!id || typeof id !== "string") {
+      throw new ZerithDBError(ErrorCode.DB_READ_FAILED, "Document id must be a non-empty string");
+    }
 
     return wrapIDBOperation(
       ErrorCode.DB_READ_FAILED,
       `Failed to get document "${id}" from "${this.collectionName}"`,
-      () => this.table.get(id)
+      async () => {
+        const doc = await this.table.get(id);
+
+        if (!doc) {
+          return undefined;
+        }
+
+        return doc;
+      }
     );
     if (!doc) return undefined;
     return this.restoreIpfsReferences(doc);
   }
 
-  async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
-    await this.checkPermission("write");
+  /**
+   * Update documents matching a filter.
+   * Returns the number of updated documents.
+   */
 
-    if (
-      !spec ||
-      Object.keys(spec).length === 0 ||
-      ((!spec.$set || Object.keys(spec.$set).length === 0) &&
-        (!spec.$unset || Object.keys(spec.$unset).length === 0))
-    ) {
+  async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
+    this.validateFilter(filter);
+
+    if (spec === null || spec === undefined || typeof spec !== "object") {
+      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Update spec must be a valid object");
+    }
+
+    const hasSet = spec.$set && Object.keys(spec.$set).length > 0;
+
+    const hasUnset = spec.$unset && Object.keys(spec.$unset).length > 0;
+
+    if (!hasSet && !hasUnset) {
       throw new ZerithDBError(
         ErrorCode.DB_WRITE_FAILED,
-        "Update spec cannot be empty. Must provide non-empty $set or $unset."
+        "Update spec must contain non-empty $set or $unset"
       );
     }
     await this.checkBiometric("Update Documents");
@@ -227,45 +335,50 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
       ErrorCode.DB_WRITE_FAILED,
       `Failed to update documents in "${this.collectionName}"`,
       async () => {
-        // Query RAW documents (with IPFS references untouched) so we don't write restored Blobs back to IndexedDB!
-        const matches = await this.find(filter, {}, false);
+        const matches = await this.find(filter);
 
-        let processedSpec = { ...spec };
-        if (this.config?.ipfs?.enabled && processedSpec.$set) {
-          const sizeThreshold = this.config.ipfs.sizeThreshold ?? 0;
-          const provider =
-            this.config.ipfs.provider ??
-            new DefaultIpfsProvider(this.config.ipfs.apiUrl, this.config.ipfs.gatewayUrl);
-          const uploadFn = (data: Blob | Uint8Array) => provider.upload(data);
-          processedSpec = {
-            ...processedSpec,
-            $set: await uploadLargeFiles(processedSpec.$set, sizeThreshold, uploadFn),
-          };
+        if (matches.length === 0) {
+          return 0;
         }
 
         const now = Date.now();
+
         await this.table.bulkPut(matches.map((doc) => this.applyUpdateSpec(doc, spec, now)));
-        this.notifyMutation?.();
+
         return matches.length;
       }
     );
   }
 
-  async delete(filter: QueryFilter<T>): Promise<number> {
-    await this.checkPermission("delete");
+  /**
+   * Delete documents matching a filter.
+   * Returns the number of deleted documents.
+   */
 
+  async delete(filter: QueryFilter<T>): Promise<number> {
+    this.validateFilter(filter);
+
+    await this.checkBiometric("Delete Documents");
     return wrapIDBOperation(
       ErrorCode.DB_DELETE_FAILED,
       `Failed to delete documents from "${this.collectionName}"`,
       async () => {
-        // Use raw find to avoid loading from IPFS during delete query
-        const matches = await this.find(filter, {}, false);
+        const matches = await this.find(filter);
+
+        if (matches.length === 0) {
+          throw new ZerithDBError(ErrorCode.DB_DELETE_FAILED, "No matching documents found");
+        }
+
         await this.table.bulkDelete(matches.map((d) => d._id));
-        this.notifyMutation?.();
+
         return matches.length;
       }
     );
   }
+
+  /**
+   * Delete every document in the collection.
+   */
 
   async clearAll(): Promise<void> {
     await this.checkPermission("delete");
@@ -354,36 +467,89 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
   }
 
   private matchesFilter(doc: Document<T>, filter: QueryFilter<T>): boolean {
+    const validOperators = [
+      "$eq",
+      "$ne",
+      "$gt",
+      "$gte",
+      "$lt",
+      "$lte",
+      "$in",
+      "$nin",
+      "$regex",
+      "$exists",
+    ];
+
     for (const [key, condition] of Object.entries(filter)) {
       const fieldValue = (doc as Record<string, any>)[key];
 
-      if (condition === null || typeof condition !== "object") {
-        if (fieldValue !== condition) return false;
+      // Primitive equality matching
+      // Example:
+      // { age: 10 }
+      if (condition === null || typeof condition !== "object" || condition instanceof RegExp) {
+        if (fieldValue !== condition) {
+          return false;
+        }
+
         continue;
       }
 
       const conditions = condition as Record<string, any>;
+
+      // Validate supported operators
+      for (const op of Object.keys(conditions)) {
+        if (op.startsWith("$") && !validOperators.includes(op)) {
+          throw new ZerithDBError(ErrorCode.DB_READ_FAILED, `Unsupported query operator: ${op}`);
+        }
+      }
+
       const isOperatorObject = Object.keys(conditions).some((k) => k.startsWith("$"));
 
+      // Deep object equality
+      // Example:
+      // { profile: { name: "john" } }
       if (!isOperatorObject) {
-        if (JSON.stringify(fieldValue) !== JSON.stringify(condition)) return false;
+        if (JSON.stringify(fieldValue) !== JSON.stringify(condition)) {
+          return false;
+        }
+
         continue;
       }
 
-      if ("$eq" in conditions && fieldValue !== conditions["$eq"]) return false;
-      if ("$ne" in conditions && fieldValue === conditions["$ne"]) return false;
-      if ("$gt" in conditions && !((fieldValue as any) > (conditions["$gt"] as never)))
+      // Equality operators
+      if ("$eq" in conditions && fieldValue !== conditions.$eq) {
         return false;
-      if ("$gte" in conditions && !((fieldValue as any) >= (conditions["$gte"] as never)))
+      }
+
+      if ("$ne" in conditions && fieldValue === conditions.$ne) {
         return false;
-      if ("$lt" in conditions && !((fieldValue as any) < (conditions["$lt"] as never)))
+      }
+
+      // Comparison operators
+      if ("$gt" in conditions && !(fieldValue > conditions.$gt)) {
         return false;
-      if ("$lte" in conditions && !((fieldValue as any) <= (conditions["$lte"] as never)))
+      }
+
+      if ("$gte" in conditions && !(fieldValue >= conditions.$gte)) {
         return false;
-      if ("$in" in conditions && !(conditions["$in"] as unknown[]).includes(fieldValue))
+      }
+
+      if ("$lt" in conditions && !(fieldValue < conditions.$lt)) {
         return false;
-      if ("$nin" in conditions && (conditions["$nin"] as unknown[]).includes(fieldValue))
+      }
+
+      if ("$lte" in conditions && !(fieldValue <= conditions.$lte)) {
         return false;
+      }
+
+      // Array inclusion operators
+      if ("$in" in conditions && !(conditions.$in as unknown[]).includes(fieldValue)) {
+        return false;
+      }
+
+      if ("$nin" in conditions && (conditions.$nin as unknown[]).includes(fieldValue)) {
+        return false;
+      }
       if ("$exists" in conditions) {
         const exists = key in doc;
         if (conditions.$exists !== exists) return false;
@@ -396,7 +562,30 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         regex.lastIndex = 0;
         if (!regex.test(fieldValue)) return false;
       }
+
+      // Regular expression matching
+      // Handle regex-based matching
+      if ("$regex" in conditions) {
+        const regex =
+          conditions.$regex instanceof RegExp
+            ? new RegExp(
+                conditions.$regex.source,
+                conditions.$regex.flags.replace("g", "").replace("y", "")
+              )
+            : new RegExp(conditions.$regex);
+
+        // Regex only works on strings
+        if (typeof fieldValue !== "string") {
+          return false;
+        }
+
+        // Exclude document if regex does not match
+        if (!regex.test(fieldValue)) {
+          return false;
+        }
+      }
     }
+
     return true;
   }
 
@@ -407,7 +596,12 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         const conditions = { ...condition } as Record<string, any>;
         const isOperatorObject = Object.keys(conditions).some((k) => k.startsWith("$"));
         if (isOperatorObject && "$regex" in conditions) {
-          conditions["$regex"] = this.compileRegexCondition(conditions);
+          const regex = conditions["$regex"];
+          // Precompile regex and remove stateful flags
+          conditions["$regex"] =
+            regex instanceof RegExp
+              ? new RegExp(regex.source, regex.flags.replace("g", "").replace("y", ""))
+              : new RegExp(regex);
         }
         compiled[key] = conditions;
       } else {
@@ -466,10 +660,15 @@ class ZerithDBDexie extends Dexie {
    * @returns The Dexie {@link Table} handle for the collection
    */
   ensureCollection(name: string): Table {
+    if (!name || typeof name !== "string" || !name.trim()) {
+      throw new ZerithDBError(ErrorCode.DB_INIT_FAILED, "Collection name cannot be empty");
+    }
+
     if (!this.tableMap.has(name)) {
       this._currentSchema[name] = "_id, _createdAt, _updatedAt";
 
       const nextVersion = Math.max(this.verno, this._pendingVersion) + 1;
+
       this._pendingVersion = nextVersion;
 
       if (this.isOpen()) {
@@ -477,8 +676,10 @@ class ZerithDBDexie extends Dexie {
       }
 
       this.version(nextVersion).stores(this._currentSchema);
+
       this.tableMap.set(name, this.table(name));
     }
+
     return this.tableMap.get(name)!;
   }
 
@@ -515,10 +716,20 @@ class ZerithDBDexie extends Dexie {
  */
 export class DbClient extends EventEmitter<{ "mutation": { collection: string } }> {
   private readonly dexie: ZerithDBDexie;
-  private readonly collections = new Map<string, CollectionClient>();
+  private readonly appId: string;
 
-  constructor(config: ZerithDBConfig) {
-    super();
+  private readonly collections = new Map<string, CollectionClient<any>>();
+
+  private readonly graphs = new Map<string, GraphClient<any>>();
+
+  constructor(
+    config: ZerithDBConfig,
+    private readonly auth?: any
+  ) {
+    if (!config?.appId || typeof config.appId !== "string") {
+      throw new ZerithDBError(ErrorCode.DB_INIT_FAILED, "Invalid appId provided");
+    }
+      
     this.appId = config.appId;
     this.dexie = new ZerithDBDexie(config.appId);
     if (config.ipfs?.enabled) {
@@ -545,6 +756,7 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
         "Collection name must be a non-empty string"
       );
     }
+
     if (!this.collections.has(name)) {
       const table = this.dexie.ensureCollection(name);
       this.collections.set(name, new CollectionClient<T>(
@@ -555,6 +767,7 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
         }
       ));
     }
+
     return this.collections.get(name) as CollectionClient<T>;
   }
 
@@ -575,6 +788,7 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
 
     for (const [name, client] of this.collections) {
       const count = await client.count();
+
       collections[name] = count;
       recordCount += count;
     }
@@ -608,10 +822,12 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
       "Failed to export local backup snapshot",
       async () => {
         const collectionNames = options.collections ?? this.allCollectionNames();
+
         const collections: BackupSnapshot["collections"] = {};
 
         for (const name of collectionNames) {
           const table = this.dexie.ensureCollection(name);
+
           collections[name] = (await table.toArray()) as Document<Record<string, any>>[];
         }
 
