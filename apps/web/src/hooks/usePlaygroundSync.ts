@@ -3,12 +3,6 @@
 import { useEffect, useState } from "react";
 import { mergePlaygroundNotes, type PlaygroundNote } from "@/lib/playground-queries";
 
-export type MergeReview = {
-  localNotes: PlaygroundNote[];
-  remoteNotes: PlaygroundNote[];
-  suggestion: PlaygroundNote[];
-};
-
 const INITIAL_NOTE: PlaygroundNote = {
   id: "seed",
   text: "Welcome! Run a query to see CRDT sync.",

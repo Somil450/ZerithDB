@@ -383,32 +383,6 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         return false;
       if ("$nin" in conditions && (conditions["$nin"] as unknown[]).includes(fieldValue))
         return false;
-      if ("$exists" in conditions) {
-        const exists = fieldValue !== undefined && fieldValue !== null;
-        if (conditions["$exists"] && !exists) return false;
-        if (!conditions["$exists"] && exists) return false;
-        continue;
-      }
-      if ("$regex" in conditions) {
-        if (typeof fieldValue !== "string") return false;
-        const pattern = conditions["$regex"] as RegExp | string;
-        
-        let regex: RegExp;
-        if (pattern instanceof RegExp) {
-          regex = pattern;
-        } else {
-          try {
-            const flags = (conditions as any)["$flags"] ?? (conditions as any)["$options"];
-            regex = new RegExp(pattern, flags);
-          } catch (e) {
-            return false;
-          }
-        }
-        
-        // Reset lastIndex for stateful (global/sticky) regexes
-        if (regex.global || regex.sticky) regex.lastIndex = 0;
-        if (!regex.test(fieldValue)) return false;
-      }
     }
 
     return true;
@@ -456,6 +430,7 @@ class ZerithDBDexie extends Dexie {
     if (!this.tableMap.has(name)) {
       this._currentSchema[name] = "_id, _createdAt, _updatedAt";
 
+      // We must increment the version for every new collection added dynamically
       const nextVersion = Math.max(this.verno, this._pendingVersion) + 1;
 
       this._pendingVersion = nextVersion;

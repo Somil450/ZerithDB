@@ -918,18 +918,10 @@ function ClientCard({
 }) {
   const isBlue = client.color === "blue";
   const textColor = isBlue ? "text-blue-400" : "text-purple-400";
-  const bgColor = isBlue
-    ? "bg-blue-50 dark:bg-blue-950/30"
-    : "bg-purple-50 dark:bg-purple-950/30";
-  const borderColor = isBlue
-    ? "border-blue-100 dark:border-blue-900"
-    : "border-purple-100 dark:border-purple-900";
-  const identityBorder = isBlue
-    ? "border-blue-200 dark:border-blue-800"
-    : "border-purple-200 dark:border-purple-800";
-  const identityText = isBlue
-    ? "text-blue-700 dark:text-blue-300"
-    : "text-purple-700 dark:text-purple-300";
+  const bgColor = isBlue ? "bg-blue-50" : "bg-purple-50";
+  const borderColor = isBlue ? "border-blue-100" : "border-purple-100";
+  const identityBorder = isBlue ? "border-blue-200" : "border-purple-200";
+  const identityText = isBlue ? "text-blue-700" : "text-purple-700";
   const identityIcon = isBlue
     ? "text-blue-500 hover:text-blue-700 hover:bg-blue-100"
     : "text-purple-500 hover:text-purple-700 hover:bg-purple-100";
@@ -953,24 +945,13 @@ function ClientCard({
 
       {/* Identity Display */}
       <div className={`${bgColor} px-4 py-3 border-b ${borderColor}`}>
-        <div className="flex items-center justify-between mb-2">
-          <div
-            className={`text-xs font-semibold ${isBlue ? "text-blue-900" : "text-purple-900"} uppercase tracking-wide`}
-          >
-            Identity (Ed25519 Mock)
-          </div>
-          <button
-            onClick={() => onClearChat(client.id)}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
-            title="Clear all messages"
-            aria-label={`Clear chat for Browser ${client.id}`}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear Chat</span>
-          </button>
+        <div
+          className={`text-xs font-semibold ${isBlue ? "text-blue-900" : "text-purple-900"} mb-2 uppercase tracking-wide`}
+        >
+          Identity (Ed25519 Mock)
         </div>
         <div
-          className={`flex items-center gap-2 bg-white dark:bg-zinc-800 rounded-lg px-3 py-2 border ${identityBorder} transition-colors duration-300`}
+          className={`flex items-center gap-2 bg-white rounded-lg px-3 py-2 border ${identityBorder}`}
         >
           <code className={`text-xs ${identityText} font-mono flex-1 truncate`}>
             {client.identity || "(generating...)"}
@@ -992,9 +973,9 @@ function ClientCard({
         {isLoading ? (
           <div className="flex flex-col gap-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="bg-white dark:bg-zinc-800 p-4 rounded-xl border border-gray-100 dark:border-zinc-700 animate-pulse transition-colors duration-300">
-                <div className="h-4 bg-gray-200 dark:bg-zinc-600 rounded w-3/4 mb-2 transition-colors duration-300" />
-                <div className="h-3 bg-gray-100 dark:bg-zinc-700 rounded w-1/3 transition-colors duration-300" />
+              <div key={i} className="bg-white p-4 rounded-xl border border-gray-100 animate-pulse">
+                <div className="h-4 bg-gray-200 rounded w-3/4 mb-2" />
+                <div className="h-3 bg-gray-100 rounded w-1/3" />
               </div>
             ))}
           </div>

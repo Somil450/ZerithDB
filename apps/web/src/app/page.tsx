@@ -22,15 +22,15 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 
 const CodeWalkthrough = dynamic(() => import("@/components/CodeWalkthrough"), {
-  loading: () => (
-    <div className="h-96 animate-pulse rounded-xl bg-gray-100 dark:bg-zinc-800 transition-colors duration-300" />
-  ),
+  loading: () => <div className="h-96 animate-pulse rounded-xl bg-gray-100" />,
 });
 
 const TerminalShowcase = dynamic(() => import("@/components/TerminalShowcase"), {
-  loading: () => (
-    <div className="h-96 animate-pulse rounded-xl bg-gray-100 dark:bg-zinc-800 transition-colors duration-300" />
-  ),
+  loading: () => <div className="h-96 animate-pulse rounded-xl bg-gray-100" />,
+});
+
+const AnimatedDiagram = dynamic(() => import("@/components/AnimatedDiagram"), {
+  loading: () => <div className="h-96 animate-pulse rounded-xl bg-gray-100" />,
 });
 
 const AnimatedDiagram = dynamic(() => import("@/components/AnimatedDiagram"), {

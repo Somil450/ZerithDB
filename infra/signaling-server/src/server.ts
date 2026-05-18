@@ -571,19 +571,11 @@ wss.on("connection", (ws, req) => {
   // Relay messages between peers
   ws.on("message", (data) => {
     logger.debug(`[MESSAGE] peer=${peerId} room=${roomId}`);
-
-    // Track metrics
-    const bytes = data.toString().length;
-    stats.totalMessagesReceived++;
-    stats.totalBandwidthBytesReceived += bytes;
-
     let msg: { to?: string; from?: string; [key: string]: unknown };
     try {
       msg = JSON.parse(data.toString());
     } catch {
       logger.warn(`[!] Invalid message from peer=${peerId}`);
-      stats.invalidMessagesReceived++;
-      stats.totalErrors++;
       return;
     }
 
@@ -1221,7 +1213,7 @@ process.on("SIGTERM", () => {
   logger.info("Shutting down signaling server...");
   // Clean up all polling sessions
   for (const [sessionId] of pollingSessions) {
-    cleanupPollingSession(sessionId, "error");
+    cleanupPollingSession(sessionId);
   }
   wss.close(() => server.close(() => process.exit(0)));
 });

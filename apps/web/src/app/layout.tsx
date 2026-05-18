@@ -5,6 +5,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import ToasterProvider from "@/components/ToasterProvider";
+import { ScrollToTop } from "@/components/ScrollToTop";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -29,7 +30,9 @@ export default function RootLayout({
         <ThemeProvider>
           <ThemeToggle />
           {children}
-        </ClientLayout>
+          <ToasterProvider />
+          <ScrollToTop />
+        </ThemeProvider>
       </body>
     </html>
   );

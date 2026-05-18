@@ -71,17 +71,6 @@ wss://signal-server-url?room=my-room&peer=peer-id&powChallenge=...&powNonce=...
 At this stage, the connection is only used for signaling and peer discovery. Application data is not
 sent through the signaling server.
 
-Before opening the WebSocket, the browser SDK fetches a short-lived challenge from:
-
-```text
-GET /pow/challenge?room=my-room&peer=peer-id
-```
-
-The signaling server signs the challenge and chooses the current difficulty based on active peer
-load plus the configured `POW_THREAT_LEVEL`. Verification is intentionally fast: the server checks
-the signature, expiration, replay cache, room/peer binding, and one SHA-256 digest. HTTP polling
-uses the same puzzle in `POST /poll/join` under the `pow` field.
-
 ---
 
 ## 2. Peer Discovery
@@ -100,9 +89,7 @@ For every discovered peer, ZerithDB creates a peer connection:
 this.createPeer(peerId, true);
 ```
 
-The `true` value marks the peer as the **initiator**, meaning it starts the WebRTC handshake.
-
----
+## The `true` value marks the peer as the **initiator**, meaning it starts the WebRTC handshake.
 
 ## 3. Offer and Answer Exchange
 
@@ -160,9 +147,7 @@ The answer is handled using:
 case "answer":
 ```
 
-and applied to complete the connection setup.
-
----
+## and applied to complete the connection setup.
 
 ## 4. ICE Candidate Exchange
 
