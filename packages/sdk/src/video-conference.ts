@@ -18,6 +18,7 @@ type VideoConferenceEvents = {
   "stream:added": { peerId: PeerId; stream: MediaStream; metadata?: MediaStreamMetadata };
   "stream:removed": { peerId: PeerId; streamId: string };
   "active-speaker:changed": ActiveSpeakerState | null;
+  "quality:degraded": { peerId: PeerId; stats: { packetsLost: number; jitter: number; roundTripTime: number } };
 };
 
 export type VideoStreamMetadataInput = MediaStreamMetadataInput;
@@ -32,6 +33,7 @@ export type VideoStreamMetadataInput = MediaStreamMetadataInput;
 export class VideoConferenceManager extends EventEmitter<VideoConferenceEvents> {
   private readonly participants = new Map<PeerId, VideoParticipantState>();
   private localParticipant: VideoParticipantState;
+  private qualityMonitorInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly sync: SyncEngine,
@@ -54,6 +56,10 @@ export class VideoConferenceManager extends EventEmitter<VideoConferenceEvents> 
     this.sync.ephemeral.on("change", this.onEphemeralChange);
     this.network.on("media:stream", this.onRemoteStream);
     this.network.on("media:stream:removed", this.onRemoteStreamRemoved);
+
+    this.qualityMonitorInterval = setInterval(() => {
+      void this.monitorConnectionQuality();
+    }, 5000);
   }
 
   /**
@@ -144,6 +150,49 @@ export class VideoConferenceManager extends EventEmitter<VideoConferenceEvents> 
     this.sync.ephemeral.off("change", this.onEphemeralChange);
     this.network.off("media:stream", this.onRemoteStream);
     this.network.off("media:stream:removed", this.onRemoteStreamRemoved);
+    if (this.qualityMonitorInterval !== null) {
+      clearInterval(this.qualityMonitorInterval);
+      this.qualityMonitorInterval = null;
+    }
+  }
+
+  private async monitorConnectionQuality(): Promise<void> {
+    const peerIds = this.network.getConnectedPeerIds();
+    for (const peerId of peerIds) {
+      const stats = await this.network.getPeerConnectionStats(peerId);
+      if (!stats) continue;
+
+      let packetsLost = 0;
+      let jitter = 0;
+      let roundTripTime = 0;
+
+      stats.forEach((report) => {
+        if (report.type === "inbound-rtp" && (report.kind === "video" || report.kind === "audio")) {
+          if (typeof report.packetsLost === "number") {
+            packetsLost += report.packetsLost;
+          }
+          if (typeof report.jitter === "number") {
+            jitter = Math.max(jitter, report.jitter);
+          }
+        }
+        if (report.type === "candidate-pair" && report.state === "succeeded") {
+          if (typeof report.currentRoundTripTime === "number") {
+            roundTripTime = report.currentRoundTripTime;
+          }
+        }
+      });
+
+      if (packetsLost > 100 || jitter > 0.1 || roundTripTime > 0.5) {
+        console.warn(`[ZerithDB] Severe connection quality degradation detected on peer ${peerId}.`);
+        this.emit("quality:degraded", { peerId, stats: { packetsLost, jitter, roundTripTime } });
+
+        // Automatically toggle camera stream off to conserve bandwidth
+        if (!this.localParticipant.muted.video) {
+          console.log("[ZerithDB] Dynamic Downgrade: Muting local camera to protect call quality.");
+          this.setMuted("video", true);
+        }
+      }
+    }
   }
 
   private publishLocalParticipant(options: { immediate?: boolean } = {}): void {

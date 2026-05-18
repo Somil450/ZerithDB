@@ -60,6 +60,14 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
   private disposed = false;
   private currentUrlIndex = 0;
 
+  private broadcastChannel: BroadcastChannel | null = null;
+  private isLeaderTab = false;
+  private leaderHeartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private leaderTimeoutCheck: ReturnType<typeof setInterval> | null = null;
+  private lastLeaderHeartbeatTime = 0;
+  private readonly tabId = crypto.randomUUID();
+  private currentRoomId: string | null = null;
+
   constructor(
     private readonly config: ZerithDBConfig,
     private readonly auth: AuthManager
@@ -94,6 +102,21 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
    * - `"polling"`: HTTP long-polling only.
    */
   async connect(roomId: string): Promise<void> {
+    this.setupMultiTabCoordination(roomId);
+
+    // Wait a brief moment to see if another tab is already leader
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    if (!this.isLeaderTab && Date.now() - this.lastLeaderHeartbeatTime < 2000) {
+      console.log(`[ZerithDB] Active leader tab detected. Tab ${this.tabId} running in follower mode.`);
+      return;
+    }
+
+    // No active leader detected, promote this tab
+    await this.promoteToLeader();
+  }
+
+  private async actualConnect(roomId: string): Promise<void> {
     const urls = this.getSignalingUrls();
 
     for (let i = 0; i < urls.length; i++) {
@@ -113,6 +136,97 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
       ErrorCode.NETWORK_SIGNALING_FAILED,
       `All signaling servers failed. Tried: ${urls.join(", ")}`
     );
+  }
+
+  private setupMultiTabCoordination(roomId: string): void {
+    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") {
+      this.isLeaderTab = true;
+      return;
+    }
+
+    this.currentRoomId = roomId;
+    this.broadcastChannel = new BroadcastChannel(`zerithdb_leader_${roomId}`);
+
+    this.broadcastChannel.onmessage = (event) => {
+      const msg = event.data as { type: string; senderTabId: string };
+      if (!msg || msg.senderTabId === this.tabId) return;
+
+      if (msg.type === "leader-heartbeat") {
+        this.lastLeaderHeartbeatTime = Date.now();
+        if (this.isLeaderTab) {
+          // Conflict resolution: lower tab ID wins leadership
+          if (this.tabId > msg.senderTabId) {
+            this.demoteToFollower();
+          }
+        }
+      } else if (msg.type === "request-leadership") {
+        if (this.isLeaderTab) {
+          this.sendHeartbeat();
+        } else {
+          this.lastLeaderHeartbeatTime = Date.now();
+        }
+      }
+    };
+
+    // Broadcast our initial presence
+    this.broadcastChannel.postMessage({ type: "request-leadership", senderTabId: this.tabId });
+
+    // Periodically check if leader is dead
+    this.lastLeaderHeartbeatTime = Date.now();
+    this.leaderTimeoutCheck = setInterval(() => {
+      if (!this.isLeaderTab && Date.now() - this.lastLeaderHeartbeatTime > 3000) {
+        console.log(`[ZerithDB] Leader tab seems inactive. Claiming leadership for tab: ${this.tabId}`);
+        void this.promoteToLeader();
+      }
+    }, 1000);
+  }
+
+  private sendHeartbeat(): void {
+    if (this.broadcastChannel) {
+      this.broadcastChannel.postMessage({ type: "leader-heartbeat", senderTabId: this.tabId });
+    }
+  }
+
+  private async promoteToLeader(): Promise<void> {
+    if (this.isLeaderTab) return;
+    this.isLeaderTab = true;
+    console.log(`[ZerithDB] Tab ${this.tabId} promoted to leader.`);
+
+    // Start sending heartbeats
+    this.sendHeartbeat();
+    this.leaderHeartbeatInterval = setInterval(() => this.sendHeartbeat(), 1000);
+
+    // Actually connect to signaling and build WebRTC mesh
+    if (this.currentRoomId) {
+      try {
+        await this.actualConnect(this.currentRoomId);
+      } catch (err) {
+        console.error("[ZerithDB] Leader tab failed to connect:", err);
+      }
+    }
+  }
+
+  private demoteToFollower(): void {
+    if (!this.isLeaderTab) return;
+    this.isLeaderTab = false;
+    console.log(`[ZerithDB] Tab ${this.tabId} demoted to follower due to leadership conflict.`);
+
+    if (this.leaderHeartbeatInterval) {
+      clearInterval(this.leaderHeartbeatInterval);
+      this.leaderHeartbeatInterval = null;
+    }
+
+    // Sever all WebRTC connections
+    for (const [, peer] of this.peers) {
+      peer.destroy();
+    }
+    this.peers.clear();
+    this.peerInfo.clear();
+    if (this.transport !== null) {
+      this.transport.close();
+      this.transport = null;
+    }
+    this.activeTransportType = null;
   }
 
   /**
@@ -208,10 +322,37 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
     };
   }
 
+  /**
+   * Returns list of connected peer IDs.
+   */
+  getConnectedPeerIds(): PeerId[] {
+    return [...this.peers.keys()];
+  }
+
+  /**
+   * Fetch WebRTC getStats() report for a specific peer.
+   */
+  async getPeerConnectionStats(peerId: PeerId): Promise<RTCStatsReport | null> {
+    const peer = this.peers.get(peerId);
+    if (!peer) return null;
+    const pc = (peer as any)._pc as RTCPeerConnection;
+    if (!pc) return null;
+    return pc.getStats();
+  }
+
   async dispose(): Promise<void> {
     this.disposed = true;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
+    }
+    if (this.leaderHeartbeatInterval !== null) {
+      clearInterval(this.leaderHeartbeatInterval);
+    }
+    if (this.leaderTimeoutCheck !== null) {
+      clearInterval(this.leaderTimeoutCheck);
+    }
+    if (this.broadcastChannel !== null) {
+      this.broadcastChannel.close();
     }
     for (const [, peer] of this.peers) {
       peer.destroy();

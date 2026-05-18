@@ -249,7 +249,7 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     this.pendingUpdates.clear();
   }
 
-  private onPeerUpdate(msg: { type: string; payload: Uint8Array | string; from: string }): void {
+  private async onPeerUpdate(msg: { type: string; payload: Uint8Array | string; from: string }): Promise<void> {
     if (msg.type === "sync-upgrade-offer") {
       const payloadStr =
         typeof msg.payload === "string" ? msg.payload : new TextDecoder().decode(msg.payload);
@@ -283,10 +283,10 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
 
     const payload = typeof msg.payload === "string" ? base64ToBytes(msg.payload) : msg.payload;
 
-    const decoded = this.decodeMessage(payload);
+    const decoded = await this.decodeMessage(payload);
     if (decoded === null) return;
 
-    void this.applyRemoteUpdate(decoded.collectionName, decoded.update, msg.from);
+    await this.applyRemoteUpdate(decoded.collectionName, decoded.update, msg.from);
   }
 
   private onPeerConnected(): void {
@@ -321,7 +321,7 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
 
       this.network.broadcast({
         type: "sync-update",
-        payload: this.encodeMessage(collectionName, finalUpdate),
+        payload: await this.encodeMessage(collectionName, finalUpdate),
       });
 
       await this.outbox.acknowledge(mutation.id);
@@ -370,39 +370,115 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     for (const mutation of pending) {
       this.network.broadcast({
         type: mutation.type,
-        payload: this.encodeMessage(mutation.collection, mutation.payload),
+        payload: await this.encodeMessage(mutation.collection, mutation.payload),
       });
       await this.outbox.acknowledge(mutation.id);
     }
   }
 
-  private encodeMessage(collectionName: string, update: Uint8Array): string {
+  private cryptoKey: CryptoKey | null = null;
+
+  private async getCryptoKey(): Promise<CryptoKey | null> {
+    if (this.cryptoKey) return this.cryptoKey;
+    const rawKey = this.config.sync?.encryptionKey;
+    if (!rawKey) return null;
+
+    try {
+      const encoder = new TextEncoder();
+      const rawKeyBytes = encoder.encode(rawKey);
+
+      // Simple key derivation using SHA-256 to hash the key/password to exactly 32 bytes (256 bits)
+      const hash = await crypto.subtle.digest("SHA-256", rawKeyBytes);
+      
+      this.cryptoKey = await crypto.subtle.importKey(
+        "raw",
+        hash,
+        { name: "AES-GCM" },
+        false,
+        ["encrypt", "decrypt"]
+      );
+      return this.cryptoKey;
+    } catch (err) {
+      console.error("[ZerithDB] Failed to initialize E2E CryptoKey:", err);
+      return null;
+    }
+  }
+
+  private async encryptPayload(payload: Uint8Array): Promise<Uint8Array> {
+    const key = await this.getCryptoKey();
+    if (!key) return payload;
+
+    // Generate a secure 12-byte IV for AES-GCM
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encrypted = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      payload
+    );
+
+    const combined = new Uint8Array(iv.length + encrypted.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(encrypted), iv.length);
+    return combined;
+  }
+
+  private async decryptPayload(encryptedPayload: Uint8Array): Promise<Uint8Array | null> {
+    const key = await this.getCryptoKey();
+    if (!key) return encryptedPayload;
+
+    try {
+      if (encryptedPayload.length < 12) return null;
+      const iv = encryptedPayload.slice(0, 12);
+      const data = encryptedPayload.slice(12);
+
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        data
+      );
+      return new Uint8Array(decrypted);
+    } catch (err) {
+      console.error("[ZerithDB] Failed to decrypt syncing payload. Key might be incorrect.", err);
+      return null;
+    }
+  }
+
+  private async encodeMessage(collectionName: string, update: Uint8Array): Promise<string> {
     const nameBytes = new TextEncoder().encode(collectionName);
     // Use 2-byte big-endian header to support collection names up to 65535 bytes
     const header = new Uint8Array(2);
     header[0] = (nameBytes.length >> 8) & 0xff;
     header[1] = nameBytes.length & 0xff;
-    const combined = new Uint8Array(2 + nameBytes.length + update.length);
+    
+    // Encrypt the update binary delta before packing
+    const encryptedUpdate = await this.encryptPayload(update);
+
+    const combined = new Uint8Array(2 + nameBytes.length + encryptedUpdate.length);
     combined.set(header, 0);
     combined.set(nameBytes, 2);
-    combined.set(update, 2 + nameBytes.length);
+    combined.set(encryptedUpdate, 2 + nameBytes.length);
     return bytesToBase64(combined);
   }
 
-  private decodeMessage(bytes: Uint8Array): {
+  private async decodeMessage(bytes: Uint8Array): Promise<{
     collectionName: string;
     update: Uint8Array;
-  } | null {
+  } | null> {
     try {
       if (bytes.length < 2) return null;
       // Read 2-byte big-endian name length
       const nameLen = (bytes[0]! << 8) | bytes[1]!;
       if (bytes.length < 2 + nameLen) return null;
       const nameBytes = bytes.slice(2, 2 + nameLen);
-      const update = bytes.slice(2 + nameLen);
+      const encryptedUpdate = bytes.slice(2 + nameLen);
+
+      // Decrypt the update payload
+      const decryptedUpdate = await this.decryptPayload(encryptedUpdate);
+      if (!decryptedUpdate) return null;
+
       return {
         collectionName: new TextDecoder().decode(nameBytes),
-        update,
+        update: decryptedUpdate,
       };
     } catch {
       return null;

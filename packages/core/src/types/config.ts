@@ -33,6 +33,11 @@ export interface SyncConfig {
    * @default "auto"
    */
   transport?: "auto" | "websocket" | "polling";
+
+  /**
+   * Optional key or password to enable end-to-end collection-level AES-GCM encryption.
+   */
+  encryptionKey?: string;
 }
 
 export interface AuthConfig {

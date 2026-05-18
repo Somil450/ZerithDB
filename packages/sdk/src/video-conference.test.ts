@@ -144,6 +144,53 @@ describe("VideoConferenceManager", () => {
     });
 
     expect(remoteStreams).toEqual([{ peerId: "remote-peer", stream }]);
+    manager.dispose();
+  });
+
+  it("monitors connection quality and automatically downgrades camera on severe degradation", async () => {
+    const ephemeral = new FakeEphemeral("local-peer");
+    const network = new FakeNetwork();
+
+    const connectedPeerIds = ["remote-peer"];
+    const statsReport = new Map<string, any>([
+      ["inbound-video", { type: "inbound-rtp", kind: "video", packetsLost: 150, jitter: 0.12 }],
+      ["candidate-pair", { type: "candidate-pair", state: "succeeded", currentRoundTripTime: 0.6 }]
+    ]);
+
+    (network as any).getConnectedPeerIds = () => connectedPeerIds;
+    (network as any).getPeerConnectionStats = async (peerId: string) => {
+      expect(peerId).toBe("remote-peer");
+      return statsReport as unknown as RTCStatsReport;
+    };
+    (network as any).peerId = "local-peer";
+
+    const manager = new VideoConferenceManager(
+      { ephemeral } as unknown as SyncEngine,
+      network as unknown as NetworkManager
+    );
+
+    const stream = createMediaStream("camera-1");
+    manager.publishStream(stream);
+
+    manager.setMuted("video", false);
+    expect(manager.getParticipant("local-peer")?.muted.video).toBe(false);
+
+    let qualityDegradedEvent: any = null;
+    manager.on("quality:degraded", (event) => {
+      qualityDegradedEvent = event;
+    });
+
+    await (manager as any).monitorConnectionQuality();
+
+    expect(qualityDegradedEvent).not.toBeNull();
+    expect(qualityDegradedEvent.peerId).toBe("remote-peer");
+    expect(qualityDegradedEvent.stats.packetsLost).toBe(150);
+    expect(qualityDegradedEvent.stats.jitter).toBe(0.12);
+    expect(qualityDegradedEvent.stats.roundTripTime).toBe(0.6);
+
+    expect(manager.getParticipant("local-peer")?.muted.video).toBe(true);
+
+    manager.dispose();
   });
 });
 
