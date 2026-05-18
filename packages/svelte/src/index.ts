@@ -69,3 +69,7 @@ export function sortedStore<T = any>(collectionName: string, compareFn: (a: T, b
   const sorted = derived(base, ($items) => [...$items].sort(compareFn));
   return sorted;
 }
+export { syncField, syncPresence } from "./useSyncField.js";
+export { default as SyncInput } from "./components/SyncInput.svelte";
+export { default as SyncCheckbox } from "./components/SyncCheckbox.svelte";
+export { default as SyncToggle } from "./components/SyncToggle.svelte";

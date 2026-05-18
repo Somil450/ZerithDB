@@ -1,7 +1,7 @@
 {
-  "name": "zerithdb-svelte",
+  "name": "zerithdb-vue",
   "version": "0.1.0",
-  "description": "Svelte stores and utilities for ZerithDB",
+  "description": "Vue composables and components for ZerithDB",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -16,9 +16,8 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
-    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "build": "tsup src/index.ts --format esm,cjs --dts --treeshake --external vue",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch --external vue",
     "clean": "rimraf dist"
   },
   "dependencies": {
@@ -26,19 +25,14 @@
     "zerithdb-ui-core": "workspace:*"
   },
   "peerDependencies": {
-    "svelte": "^4.0.0 || ^5.0.0"
+    "vue": "^3.0.0"
   },
   "devDependencies": {
+    "vue": "^3.4.0",
     "rimraf": "^6.0.1",
-    "svelte": "^4.2.0",
-    "svelte-check": "^3.8.0",
     "tsup": "^8.2.4",
     "typescript": "^5.5.4",
     "zerithdb-eslint-config": "workspace:*",
     "zerithdb-tsconfig": "workspace:*"
-  },
-  "files": [
-    "dist",
-    "src"
-  ]
+  }
 }

@@ -1,7 +1,7 @@
 {
-  "name": "zerithdb-svelte",
+  "name": "zerithdb-ui-core",
   "version": "0.1.0",
-  "description": "Svelte stores and utilities for ZerithDB",
+  "description": "Framework agnostic core for ZerithDB CRDT UI components",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -14,31 +14,20 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "sideEffects": false,
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
-    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "clean": "rimraf dist"
   },
   "dependencies": {
     "zerithdb-sdk": "workspace:*",
-    "zerithdb-ui-core": "workspace:*"
-  },
-  "peerDependencies": {
-    "svelte": "^4.0.0 || ^5.0.0"
+    "zerithdb-core": "workspace:*"
   },
   "devDependencies": {
     "rimraf": "^6.0.1",
-    "svelte": "^4.2.0",
-    "svelte-check": "^3.8.0",
     "tsup": "^8.2.4",
     "typescript": "^5.5.4",
     "zerithdb-eslint-config": "workspace:*",
     "zerithdb-tsconfig": "workspace:*"
-  },
-  "files": [
-    "dist",
-    "src"
-  ]
+  }
 }

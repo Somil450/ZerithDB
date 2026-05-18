@@ -82,6 +82,11 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private disposed = false;
+  private currentUrlIndex = 0;
+  private readonly nameRegistry = new NameRegistry();
+  private ensResolver: MockENSResolver;
+
+
   constructor(
     private readonly config: ZerithDBConfig,
     private readonly auth: AuthManager
@@ -94,73 +99,6 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
 
   get peerId(): PeerId {
     return this.localPeerId;
-  }
-
-  addMediaStream(
-    stream: MediaStream,
-    metadata: MediaStreamMetadataInput = {}
-  ): MediaStreamMetadata {
-    const tracks = stream.getTracks().map((track) => ({
-      trackId: track.id,
-      kind: track.kind as "audio" | "video",
-      label: track.label,
-      enabled: track.enabled,
-      muted: track.muted,
-      readyState: track.readyState,
-    }));
-
-    const normalized: MediaStreamMetadata = {
-      streamId: stream.id,
-      peerId: this.peerId,
-      kind: (metadata.kind as "camera" | "screen" | "custom") ?? "camera",
-      audioMuted: tracks.filter((t) => t.kind === "audio").every((t) => !t.enabled),
-      videoMuted: tracks.filter((t) => t.kind === "video").every((t) => !t.enabled),
-      tracks,
-      updatedAt: Date.now(),
-    };
-    this.localMetadata.set(normalized.streamId, normalized);
-    return normalized;
-  }
-
-  removeMediaStream(streamOrId: MediaStream | string): void {
-    const streamId = typeof streamOrId === "string" ? streamOrId : streamOrId.id;
-    this.localMetadata.delete(streamId);
-  }
-
-  updateMediaStreamMetadata(
-    streamId: string,
-    metadata: MediaStreamMetadataInput
-  ): MediaStreamMetadata | undefined {
-    const existing = this.localMetadata.get(streamId);
-    if (!existing) return undefined;
-    const updated = {
-      ...existing,
-      kind: (metadata.kind as "camera" | "screen" | "custom") ?? existing.kind,
-      updatedAt: Date.now(),
-    };
-    this.localMetadata.set(streamId, updated);
-    return updated;
-  }
-
-  setMediaTrackEnabled(kind: "audio" | "video", enabled: boolean, streamId?: string): void {
-    for (const metadata of this.localMetadata.values()) {
-      if (streamId !== undefined && metadata.streamId !== streamId) continue;
-      for (const track of metadata.tracks) {
-        if (track.kind === kind) {
-          track.enabled = enabled;
-        }
-      }
-      metadata.audioMuted = metadata.tracks
-        .filter((track) => track.kind === "audio")
-        .every((track) => !track.enabled);
-      metadata.videoMuted = metadata.tracks
-        .filter((track) => track.kind === "video")
-        .every((track) => !track.enabled);
-    }
-  }
-
-  getLocalMediaStreamMetadata(): MediaStreamMetadata[] {
-    return [...this.localMetadata.values()];
   }
 
   /** The transport type currently in use, or null if not connected */
@@ -684,6 +622,14 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
       },
     });
 
+    for (const stream of this.localStreams.values()) {
+      try {
+        peer.addStream(stream);
+      } catch (err) {
+        console.warn("[NetworkManager] Failed to add local stream to new peer:", err);
+      }
+    }
+
     if (!initiator && offerPayload !== undefined) {
       peer.signal(offerPayload as any);
     }
@@ -746,6 +692,28 @@ export class NetworkManager extends EventEmitter<NetworkEvents> {
       }
     });
 
+    peer.on("stream", (stream: MediaStream) => {
+      this.rememberRemoteStream(remotePeerId, stream);
+      this.emit("media:stream", {
+        peerId: remotePeerId,
+        stream,
+        metadata: this.remoteStreamMetadata.get(remotePeerId)?.get(stream.id),
+      });
+
+      stream.getTracks().forEach((track) => {
+        track.addEventListener("ended", () => {
+          this.emit("media:stream:removed", {
+            peerId: remotePeerId,
+            streamId: stream.id,
+          });
+        });
+      });
+    });
+
+    peer.on("track", (track: MediaStreamTrack, stream: MediaStream) => {
+      this.rememberRemoteStream(remotePeerId, stream);
+      this.emit("media:track", { peerId: remotePeerId, track, stream });
+    });
     peer.on("close", () => {
       this.peers.delete(remotePeerId);
       this.peerInfo.delete(remotePeerId);

@@ -42,7 +42,17 @@ type RegexFilter =
  * Includes metadata fields (_id, _createdAt, _updatedAt) from Document<T>.
  */
 export type QueryFilter<T extends Record<string, any>> = {
-  [K in keyof Document<T>]?: QueryFilterValue<Document<T>[K]>;
+  [K in keyof Document<T>]?:
+    | Document<T>[K]
+    | { $eq: Document<T>[K] }
+    | { $ne: Document<T>[K] }
+    | { $gt: Document<T>[K] }
+    | { $gte: Document<T>[K] }
+    | { $lt: Document<T>[K] }
+    | { $lte: Document<T>[K] }
+    | { $in: Document<T>[K][] }
+    | { $nin: Document<T>[K][] }
+    | { $regex: RegExp | string };
 };
 
 /** Partial update spec — only user-defined fields are modified */
