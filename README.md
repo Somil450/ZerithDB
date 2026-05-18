@@ -234,27 +234,26 @@ ZerithDB ephemeral sync, so they are broadcast immediately and never persisted.
 ```mermaid
 flowchart TB
   subgraph browser["Your Browser"]
-    direction LR
-    SDK["ZerithDB SDK"]
-    SYNC["Sync Engine\n(CRDT)"]
-    P2P["P2P Network Layer\n(WebRTC mesh)"]
-    SDK -->|writes| SYNC
-    SYNC -->|broadcast| P2P
+    SDK["zerithdb-sdk\nOrchestrates all packages"]
+    SYNC["zerithdb-sync\nYjs CRDT engine"]
+    NET["zerithdb-network\nWebRTC mesh"]
+    AUTH["zerithdb-auth\nEd25519 signing"]
+    SDK --> SYNC
+    SDK --> NET
+    SDK --> AUTH
+    AUTH -->|signs every delta| SYNC
+    SYNC -->|signed delta| NET
   end
 
   subgraph storage["Local Storage"]
-    DB["Local DB\n(IndexedDB)"]
+    DB["zerithdb-db\nIndexedDB via Dexie"]
   end
 
-  SDK -->|persist| DB
-  SYNC -->|flush| DB
+  SDK --> DB
+  SYNC <-->|delta updates| DB
 
-  SIG["Signaling Server\n(WS relay)"]
-  PEER["Other Peer Browser"]
-
-  P2P -->|handshake only| SIG
-  SIG -->|peer discovery| PEER
-  P2P <-.->|"direct P2P\n(after handshake)"| PEER
+  NET <-.->|ICE handshake only| SIG["Signaling Server\nDumb WebSocket relay\nNo data stored"]
+  NET <-->|Direct P2P after handshake| PEER["Other Peer Browser\nSame zerithdb stack"]
 ```
 
 The signaling server **never sees your data**. It only brokers the initial WebRTC handshake. After
