@@ -86,34 +86,33 @@ const INSTRUCTIONS = [
 
   // Simulate DB initialization and generate identities
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-      setIsPeerConnected(true);
-    }, 1500);
+    if (isOnline) {
+      // Very basic CRDT mock: union of both sets based on ID, highest timestamp wins
+      const merged = [...clientA, ...clientB].reduce((acc, curr) => {
+        const existing = acc.find((n) => n.id === curr.id);
+        if (!existing) {
+          acc.push(curr);
+        } else if (curr.timestamp > existing.timestamp || (curr.timestamp === existing.timestamp && curr.text.localeCompare(existing.text) > 0)) {
+          existing.text = curr.text;
+          existing.timestamp = curr.timestamp;
+        }
+        return acc;
+      }, [] as Note[]);
 
-    (async () => {
-      const newClients = await Promise.all(
-        clients.map(async (c) => ({
-          ...c,
-          identity: await generateMockDID(),
-        }))
-      );
-      setClients(newClients);
-    })();
+      // Only update if there's an actual difference to prevent infinite loops
+      const changedA = JSON.stringify(merged) !== JSON.stringify(clientA);
+      const changedB = JSON.stringify(merged) !== JSON.stringify(clientB);
+      if (changedA) setClientA(merged); // eslint-disable-line react-hooks/set-state-in-effect
+      if (changedB) setClientB(merged);
 
-    return () => clearTimeout(timer);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!isOnline) {
-      setIsPeerConnected(false);
-      return;
+      if (changedA || changedB) {
+        setSyncCount((prev) => prev + 1);
+      }
     }
 
-    setIsPeerConnected(false);
-    const timer = setTimeout(() => setIsPeerConnected(true), 1000);
-    return () => clearTimeout(timer);
-  }, [isOnline]);
+  const addNote = (client: "A" | "B", text: string) => {
+    if (!text.trim()) return;
+    const newNote = { id: crypto.randomUUID(), text, timestamp: Date.now() };
 
   const peerStatus = !isOnline
     ? "offline"

@@ -515,9 +515,7 @@ class ZerithDBDexie extends Dexie {
  */
 export class DbClient extends EventEmitter<{ "mutation": { collection: string } }> {
   private readonly dexie: ZerithDBDexie;
-  private readonly appId: string;
-  private readonly collections = new Map<string, CollectionClient<any>>();
-  private readonly graphs = new Map<string, GraphClient<any>>();
+  private readonly collections = new Map<string, CollectionClient>();
 
   constructor(config: ZerithDBConfig) {
     super();

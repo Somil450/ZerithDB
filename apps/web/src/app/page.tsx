@@ -875,7 +875,7 @@ export default function LandingPage() {
               href="https://github.com/Zerith-Labs/ZerithDB"
               className="bg-black text-white px-8 py-4 rounded-xl font-medium text-base hover:bg-gray-800 transition-all shadow-lg w-full sm:w-auto"
             >
-              npm install zerithdb-sdk
+              git clone Zerith-Labs/ZerithDB
             </motion.a>
             <motion.a
               whileHover={{ scale: 1.05 }}
@@ -929,27 +929,11 @@ export default function LandingPage() {
             >
               GitHub
             </a>
-
-            <Link
-              href="/"
-              onClick={() => toast("Blog will be available soon")}
-              className="hover:text-foreground transition-colors cursor-pointer"
-            >
-              Blog
-            </Link>
-
-            <Link
-              href="/"
-              onClick={() => toast("Pricing will be available soon")}
-              className="hover:text-foreground transition-colors cursor-pointer"
-            >
-              Pricing
-            </Link>
             <a
               href="https://discord.gg/MhvuDvzWfF"
               target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-foreground transition-colors"
+              rel="noreferrer"
+              className="hover:text-gray-900 transition-colors"
             >
               Discord
             </a>

@@ -12,16 +12,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./capability/types": {
-      "types": "./dist/capability/types.d.ts",
-      "import": "./dist/capability/types.js",
-      "require": "./dist/capability/types.cjs"
-    },
-    "./capability/ucan": {
-      "types": "./dist/capability/ucan.d.ts",
-      "import": "./dist/capability/ucan.js",
-      "require": "./dist/capability/ucan.cjs"
     }
   },
   "scripts": {
