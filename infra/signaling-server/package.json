@@ -6,19 +6,38 @@
   "type": "module",
   "main": "./dist/server.js",
   "scripts": {
-    "build": "esbuild src/server.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs --minify",
+    "build": "npm run build:node && npm run build:edge",
+    "build:node": "esbuild src/server.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs --minify",
+    "build:edge": "esbuild src/server.edge.ts --bundle --platform=neutral --format=esm --outfile=dist/server.edge.js --minify",
+    "build:cloudflare": "esbuild src/server.cloudflare.ts --bundle --platform=neutral --format=esm --outfile=dist/server.cloudflare.js --minify",
     "start": "node dist/server.cjs",
     "dev": "tsx --watch src/server.ts",
+    "dev:edge": "tsx watch src/server.edge.ts",
+    "dev:cloudflare": "wrangler dev --local",
+    "deploy:cloudflare": "wrangler deploy",
+    "deploy:edge": "vercel --prod",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "0.57.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.57.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.57.0",
+    "@opentelemetry/resources": "1.30.0",
+    "@opentelemetry/sdk-metrics": "1.30.0",
+    "@opentelemetry/sdk-node": "0.57.0",
+    "@opentelemetry/semantic-conventions": "1.28.0",
+    "jsonwebtoken": "^9.0.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260516.1",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/ws": "^8.5.12",
     "esbuild": "^0.21.5",
     "tsup": "^8.2.4",
     "tsx": "^4.17.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.6"
   }
 }

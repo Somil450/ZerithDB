@@ -4,7 +4,8 @@ import ora from "ora";
 import chalk from "chalk";
 import { execa } from "execa";
 import prompts from "prompts";
-import { writeFile } from "../utils/writeFile";
+import { validateProjectName, getProjectNameError } from "../validate-project-name.js";
+import { writeFile } from "../utils/writeFile.js";
 
 const TEMPLATES: Record<string, string> = {
   todo: "todo-app",
@@ -12,20 +13,6 @@ const TEMPLATES: Record<string, string> = {
   notes: "notes-app",
   blank: "blank",
 };
-
-const MAX_PACKAGE_NAME_LENGTH = 214;
-
-function getAppNameValidationError(value: string): string | null {
-  if (!/^[a-z0-9-]+$/.test(value)) {
-    return "App name can only contain lowercase letters, numbers, and dashes.";
-  }
-
-  if (value.length > MAX_PACKAGE_NAME_LENGTH) {
-    return `App name must be ${MAX_PACKAGE_NAME_LENGTH} characters or fewer.`;
-  }
-
-  return null;
-}
 
 export async function initCommand(
   appNameArg: string | undefined,
@@ -35,27 +22,27 @@ export async function initCommand(
   let appName = appNameArg;
 
   if (appName !== undefined) {
-    const validationError = getAppNameValidationError(appName);
-
-    if (validationError !== null) {
-      console.error(chalk.red(`Error: ${validationError}`));
-      process.exit(1);
-    }
+    // Passed as a CLI argument — validate and exit immediately if invalid.
+    // validateProjectName() prints a friendly error and calls process.exit(1).
+    validateProjectName(appName);
   }
 
   if (appName === undefined || appName.trim() === "") {
+    // No name provided — prompt the user interactively.
     const response = await prompts({
       type: "text",
       name: "appName",
       message: "What is your app name?",
       initial: "my-zerithdb-app",
-      validate: (v: string) => getAppNameValidationError(v) ?? true,
+      // Re-use the same validation logic so the prompt gives inline feedback.
+      validate: (v: string) => getProjectNameError(v) ?? true,
     });
 
     appName = response.appName as string;
   }
 
   if (appName === undefined || appName.trim() === "") {
+    // User cancelled the prompt (Ctrl-C).
     console.log(chalk.red("Aborted."));
     process.exit(1);
   }
@@ -98,7 +85,7 @@ export async function initCommand(
     // Cleanup: remove the directory if it's mostly empty (failed halfway)
     try {
       const files = await fs.readdir(targetDir);
-      if (files.length < 3) { 
+      if (files.length < 3) {
         await fs.rm(targetDir, { recursive: true, force: true });
         console.log(chalk.gray("Cleaned up incomplete project directory."));
       }
@@ -117,10 +104,9 @@ export async function initCommand(
 
     try {
       await execa("npm", ["install"], { cwd: targetDir });
-
-      installSpinner.succeed("Dependencies installed successfully");
+      installSpinner.succeed(chalk.green("Dependencies installed"));
     } catch {
-      installSpinner.warn("Dependency installation failed. Please run `npm install` manually.");
+      installSpinner.warn(chalk.yellow("Failed to install dependencies. Run `npm install` manually."));
     }
   }
 
@@ -137,7 +123,16 @@ ${chalk.green("✔")} ${chalk.bold("Your ZerithDB app is ready!")}
   - Check out the ${chalk.blue("Live Playground")} at https://zerithdb.dev/playground
   - Need help? Join our ${chalk.blue("Discord")}: https://discord.gg/MhvuDvzWfF
 
-  ${chalk.gray("Documentation:")} https://zerithdb.dev/docs
+${chalk.gray("Local development:")}
+  ${chalk.cyan("http://localhost:3000")}
+
+${chalk.gray("Available commands:")}
+  ${chalk.cyan("npm run dev")}    Start development server
+  ${chalk.cyan("npm run build")}  Create production build
+  ${chalk.cyan("npm run start")}  Start production server
+
+${chalk.gray("Docs:")} https://zerithdb.netlify.app/docs
+${chalk.gray("Discord:")} https://discord.gg/MhvuDvzWfF
 `);
 }
 
@@ -226,7 +221,7 @@ const app = createApp({
 app.sync.enable();
 
 export default function App() {
-  return <div>Hello from ZerithDB! Edit src/App.tsx to get started.</div>;
+  return <div>Hello from ZerithDB! Edit src/app/page.tsx to get started.</div>;
 }
 `;
 }

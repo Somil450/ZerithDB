@@ -1,0 +1,38 @@
+{
+  "name": "zerithdb-vue",
+  "version": "0.1.0",
+  "description": "Vue composables and components for ZerithDB",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --treeshake --external vue",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch --external vue",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zerithdb-sdk": "workspace:*",
+    "zerithdb-ui-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.0.0"
+  },
+  "devDependencies": {
+    "vue": "^3.4.0",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.2.4",
+    "typescript": "^5.5.4",
+    "zerithdb-eslint-config": "workspace:*",
+    "zerithdb-tsconfig": "workspace:*"
+  }
+}

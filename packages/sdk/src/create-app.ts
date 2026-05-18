@@ -1,5 +1,8 @@
+import type { ZerithDBConfig, CollectionOptions } from "zerithdb-core";
+import { ValidatorRegistry } from "zerithdb-core";
 import { Logger } from "zerithdb-core";
-import type { ZerithDBConfig } from "zerithdb-core";
+import type { Document, Identity, QueryFilter, SyncState, ZerithDBConfig, InsertResult, PeerInfo, UpdateSpec } from "zerithdb-core";
+export type { Document, Identity, QueryFilter, SyncState, ZerithDBConfig, InsertResult, PeerInfo, UpdateSpec };
 import { MemoryCollector, estimateStorageBytes } from "zerithdb-devtools";
 import { ZerithDBError, ErrorCode } from "zerithdb-core";
 import { DbClient, CollectionClient } from "./db-client.js";
@@ -8,6 +11,7 @@ import { LocalCloudBackupAdapter } from "./db-client.js";
 import { SyncEngine } from "./sync-engine.js";
 import { AuthManager } from "./auth-manager.js";
 import { NetworkManager } from "./network-manager.js";
+import { LLMConflictResolver } from "./conflict-resolution/resolver.js";
 
 /**
  * The root ZerithDB application instance returned by {@link createApp}.
@@ -17,17 +21,26 @@ export interface ZerithDBApp {
    * Access a database collection by name.
    * The collection is created lazily on first use.
    *
+   * Optionally pass a `schema` validator (e.g. a Zod schema) to enable
+   * runtime document validation before any insert or update.
+   *
    * @param name - Collection name (e.g. `"todos"`, `"messages"`)
-   * @returns A typed {@link DbClient} for querying and mutating documents.
+   * @param options - Optional collection config (e.g. `{ schema: zodSchema }`)
+   * @returns A typed {@link CollectionClient} for querying and mutating documents.
    *
    * @example
    * ```typescript
-   * const todos = app.db("todos");
-   * await todos.insert({ text: "Hello", done: false });
-   * const all = await todos.find({});
+   * import { z } from "zod";
+   * const TodoSchema = z.object({ text: z.string(), done: z.boolean() });
+   * type Todo = z.infer<typeof TodoSchema>;
+   *
+   * const todos = app.db<Todo>("todos", { schema: TodoSchema });
+   * await todos.insert({ text: "Hello", done: false }); // ✅ valid
+   * await todos.insert({ text: "", done: false });       // ❌ throws DB_VALIDATION_FAILED
    * ```
    */
   db<T extends Record<string, any> = Record<string, any>>(name: string): CollectionClient<T>;
+  dbClient: DbClient;
 
   /** CRDT sync engine — manages Yjs documents and P2P update propagation */
   sync: SyncEngine;
@@ -89,7 +102,7 @@ function isIndexedDBAvailable(): boolean {
 export function createApp(config: ZerithDBConfig): ZerithDBApp {
   if (!isIndexedDBAvailable()) {
     throw new ZerithDBError(
-      ErrorCode.SDK_UNSUPPORTED_ENVIRONMENT,
+      ErrorCode.SDK_NOT_INITIALIZED,
       "IndexedDB is unavailable in this browser environment. ZerithDB requires IndexedDB support. Try disabling private/incognito restrictions or use a supported browser."
     );
   }
@@ -122,14 +135,50 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
   };
 
   const logger = new Logger(resolvedConfig, "SDK");
-  logger.info("Initializing ZerithDB app", { appId: resolvedConfig.appId });
+  logger.info("Initializing ZerithDB app", {
+    appId: resolvedConfig.appId,
+  });
 
   const auth = new AuthManager(resolvedConfig);
-  const db = new DbClient(resolvedConfig);
+  const db = new DbClient(resolvedConfig, auth);
   const network = new NetworkManager(resolvedConfig, auth);
-  const sync = new SyncEngine(resolvedConfig, db, network);
+  let syncInstance: SyncEngine | null = null;
+
+  const getSync = () => {
+    if (!syncInstance) {
+      syncInstance = new SyncEngine(resolvedConfig, db, network, auth);
+    }
+
+    return syncInstance;
+  };
+
+  if (resolvedConfig.conflictResolver?.enabled === true) {
+    const resolver = new LLMConflictResolver({
+      modelName: resolvedConfig.conflictResolver.modelName,
+      autoApplyThreshold: resolvedConfig.conflictResolver.autoApplyThreshold,
+    });
+
+    sync.registerPlugin({
+      id: resolver.id,
+      version: resolver.version,
+      conflictResolver: resolver,
+    });
+
+    if (resolvedConfig.conflictResolver.onConflict) {
+      const onConflict = resolvedConfig.conflictResolver.onConflict;
+      sync.on("conflict:flagged", (event) => {
+        const suggestion =
+          typeof event === "object" && event !== null && "suggestion" in event &&
+          typeof event.suggestion === "string"
+            ? event.suggestion
+            : "Conflict flagged for review";
+        onConflict(event.collectionName, suggestion);
+      });
+    }
+  }
 
   let memoryCollector: MemoryCollector | null = null;
+
   if (resolvedConfig.debug?.devtools === true) {
     memoryCollector = new MemoryCollector({
       measureIndexedDB: async () => {
@@ -137,27 +186,49 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
           estimateStorageBytes(),
           db.getMemoryStats(),
         ]);
+
         return {
           totalBytes,
           recordCount: dbStats.recordCount,
           collections: dbStats.collections,
         };
       },
+
       measureWebRTC: () => network.getBufferStats(),
     });
+
     memoryCollector.start();
   }
 
   const backupAdapters = new Set<LocalCloudBackupAdapter>();
 
+  // Cache collections so validation schema registration happens only once
+  const collectionCache = new Map<string, CollectionClient<any>>();
+
   return {
     config: Object.freeze(resolvedConfig),
 
-    db<T extends Record<string, any>>(name: string): CollectionClient<T> {
-      // DbClient already caches collection instances internally —
-      // no need for a second cache layer here.
-      return db.collection<T>(name);
+    db<T extends Record<string, any>>(
+      name: string,
+      options?: CollectionOptions<T>
+    ): CollectionClient<T> {
+      if (!collectionCache.has(name)) {
+        // Register schema BEFORE creating/retrieving collection
+        if (options?.validation) {
+          validatorRegistry.register(
+            name,
+            options.validation.schema,
+            options.validation.mode ?? "strict"
+          );
+        }
+
+        collectionCache.set(name, db.collection<T>(name));
+      }
+
+      return collectionCache.get(name) as CollectionClient<T>;
     },
+
+    dbClient: db,
 
     sync,
     auth,
@@ -165,15 +236,23 @@ export function createApp(config: ZerithDBConfig): ZerithDBApp {
 
     backup(target: CloudBackupTarget, options?: LocalCloudBackupOptions): LocalCloudBackupAdapter {
       const adapter = new LocalCloudBackupAdapter(db, target, options);
+
       backupAdapters.add(adapter);
+
       return adapter;
     },
 
     async dispose(): Promise<void> {
       memoryCollector?.stop();
+
       await Promise.all(Array.from(backupAdapters).map((a) => a.stop()));
+
       backupAdapters.clear();
-      await Promise.all([sync.dispose(), network.dispose(), db.dispose()]);
+      if (syncInstance) {
+        await syncInstance.dispose();
+      }
+
+      await Promise.all([network.dispose(), db.dispose()]);
     },
   };
 }

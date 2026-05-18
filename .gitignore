@@ -1,5 +1,6 @@
 node_modules
 dist
+package-lock.json
 .next
 .turbo
 coverage
@@ -17,6 +18,7 @@ out
 build
 my-test-app/
 test-agent/
+.pnpm-store
 
 # Playwright
 /test-results/
@@ -29,4 +31,3 @@ test-agent/
 .claude/
 .claudeignore
 *.claude
-
