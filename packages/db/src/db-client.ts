@@ -29,6 +29,9 @@ import { allowsAction } from "zerithdb-auth";
  */
 
 export class CollectionClient<T extends Record<string, any> = Record<string, any>> {
+  private static readonly writeBatchSize = 500;
+  private static readonly iterationBatchSize = 1000;
+
   constructor(
     private readonly table: Table<Document<T>>,
     private readonly collectionName: string,
@@ -184,37 +187,35 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    */
 
   async insertMany(documents: T[]): Promise<InsertResult[]> {
-    if (!Array.isArray(documents)) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents must be an array");
-    }
+    try {
+      const results: InsertResult[] = [];
 
-    if (documents.length === 0) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Documents array cannot be empty");
-    }
+      for (let index = 0; index < documents.length; index += CollectionClient.writeBatchSize) {
+        const now = Date.now();
+        const chunk = documents.slice(index, index + CollectionClient.writeBatchSize);
+        const docs = chunk.map((doc) => ({
+          ...doc,
+          _id: uuidv7(),
+          _createdAt: now,
+          _updatedAt: now,
+        })) as Document<T>[];
 
-    await this.checkBiometric("Bulk Insert Documents");
-    for (const doc of documents) {
-      this.validateDocument(doc);
-    }
-
-    const now = Date.now();
-
-    const docs = documents.map((doc) => ({
-      ...doc,
-      _id: uuidv7(),
-      _createdAt: now,
-      _updatedAt: now,
-    })) as Document<T>[];
-
-    return wrapIDBOperation(
-      ErrorCode.DB_WRITE_FAILED,
-      `Failed to bulk insert into collection "${this.collectionName}"`,
-      async () => {
         await this.table.bulkAdd(docs);
-        this.notifyMutation?.();
-        return docs.map((d) => ({ id: d._id }));
+        results.push(...docs.map((d) => ({ id: d._id })));
+
+        if (index + CollectionClient.writeBatchSize < documents.length) {
+          await yieldToEventLoop();
+        }
       }
-    );
+
+      return results;
+    } catch (err) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        `Failed to bulk insert into collection "${this.collectionName}"`,
+        { cause: err }
+      );
+    }
   }
 
   /**
@@ -227,56 +228,29 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * const high = await todos.find({ priority: { $gte: 3 } });
    * ```
    */
-  async find(filter: QueryFilter<T> = {}, options: QueryOptions<T> = {}): Promise<Document<T>[]> {
-        this.validateFilter(filter);
+  async find(filter: QueryFilter<T> = {}): Promise<Document<T>[]> {
+    try {
+      const all: Document<T>[] = [];
+      let count = 0;
 
-    return wrapIDBOperation(
-      ErrorCode.DB_READ_FAILED,
-      `Failed to query collection "${this.collectionName}"`,
-      async () => {
-        const compiledFilter = this.precompileRegexes(filter);
-        const results: Document<T>[] = [];
-
-        await this.table.each((doc) => {
-          if (this.matchesFilter(doc, compiledFilter)) {
-            results.push(doc);
-          }
-        });
-
-        if (options.sort) {
-          const { field, order = "asc" } = options.sort;
-
-          results.sort((a, b) => {
-            const aValue = a[field];
-            const bValue = b[field];
-
-            if (aValue === bValue) return 0;
-
-            if (aValue == null) return 1;
-            if (bValue == null) return -1;
-
-            const comparison = String(aValue).localeCompare(String(bValue), undefined, {
-              numeric: true,
-              sensitivity: "base",
-            });
-
-            return order === "desc" ? -comparison : comparison;
-          });
+      await this.table.each((doc) => {
+        if (this.matchesFilter(doc, filter)) {
+          all.push(doc);
         }
+        count++;
 
-        const skip = options.skip ?? options.offset ?? 0;
-        const limit = options.limit ?? Number.POSITIVE_INFINITY;
+        if (count % CollectionClient.iterationBatchSize === 0) {
+          return yieldToEventLoop();
+        }
+      });
 
-        return results.slice(skip, skip + limit);
-      }
-    );
-
-    if (restoreIpfs && this.config?.ipfs?.enabled) {
-      const restoredResults: Document<T>[] = [];
-      for (const doc of results) {
-        restoredResults.push(await this.restoreIpfsReferences(doc));
-      }
-      return restoredResults;
+      return all;
+    } catch (err) {
+      throw new ZerithDBError(
+        ErrorCode.DB_READ_FAILED,
+        `Failed to query collection "${this.collectionName}"`,
+        { cause: err }
+      );
     }
 
     return results;
@@ -314,17 +288,23 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    */
 
   async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
-    this.validateFilter(filter);
+    try {
+      const matches = await this.find(filter);
+      const now = Date.now();
+      let updatedCount = 0;
 
-    if (spec === null || spec === undefined || typeof spec !== "object") {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Update spec must be a valid object");
-    }
+      for (let index = 0; index < matches.length; index += CollectionClient.writeBatchSize) {
+        const chunk = matches.slice(index, index + CollectionClient.writeBatchSize);
+        await this.table.bulkPut(chunk.map((doc) => this.applyUpdateSpec(doc, spec, now)));
+        updatedCount += chunk.length;
 
-    const hasSet = spec.$set && Object.keys(spec.$set).length > 0;
+        if (index + CollectionClient.writeBatchSize < matches.length) {
+          await yieldToEventLoop();
+        }
+      }
 
-    const hasUnset = spec.$unset && Object.keys(spec.$unset).length > 0;
-
-    if (!hasSet && !hasUnset) {
+      return updatedCount;
+    } catch (err) {
       throw new ZerithDBError(
         ErrorCode.DB_WRITE_FAILED,
         "Update spec must contain non-empty $set or $unset"
@@ -356,24 +336,28 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    */
 
   async delete(filter: QueryFilter<T>): Promise<number> {
-    this.validateFilter(filter);
+    try {
+      const matches = await this.find(filter);
+      let deletedCount = 0;
 
-    await this.checkBiometric("Delete Documents");
-    return wrapIDBOperation(
-      ErrorCode.DB_DELETE_FAILED,
-      `Failed to delete documents from "${this.collectionName}"`,
-      async () => {
-        const matches = await this.find(filter);
+      for (let index = 0; index < matches.length; index += CollectionClient.writeBatchSize) {
+        const chunk = matches.slice(index, index + CollectionClient.writeBatchSize);
+        await this.table.bulkDelete(chunk.map((d) => d._id));
+        deletedCount += chunk.length;
 
-        if (matches.length === 0) {
-          throw new ZerithDBError(ErrorCode.DB_DELETE_FAILED, "No matching documents found");
+        if (index + CollectionClient.writeBatchSize < matches.length) {
+          await yieldToEventLoop();
         }
-
-        await this.table.bulkDelete(matches.map((d) => d._id));
-
-        return matches.length;
       }
-    );
+
+      return deletedCount;
+    } catch (err) {
+      throw new ZerithDBError(
+        ErrorCode.DB_DELETE_FAILED,
+        `Failed to delete documents from "${this.collectionName}"`,
+        { cause: err }
+      );
+    }
   }
 
   /**
@@ -393,8 +377,16 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     );
   }
 
-  async clear(): Promise<void> {
-    return this.clearAll();
+  /**
+   * Count documents matching a filter.
+   */
+  async count(filter: QueryFilter<T> = {}): Promise<number> {
+    if (Object.keys(filter).length === 0) {
+      return await this.table.count();
+    }
+
+    const docs = await this.find(filter);
+    return docs.length;
   }
 
   async count(filter: QueryFilter<T> = {}): Promise<number> {
@@ -847,4 +839,10 @@ export class DbClient extends EventEmitter<{ "mutation": { collection: string } 
     this.removeAllListeners();
     this.dexie.close();
   }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
