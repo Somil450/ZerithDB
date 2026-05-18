@@ -4,6 +4,8 @@ export { lwwMerge } from "./merge/lww.js";
 export { crdtMerge } from "./merge/crdt.js";
 export { InboxQueue } from "./queue/InboxQueue.js";
 export { OutboxQueue } from "./queue/OutboxQueue.js";
+export { DexieStorageProvider, createQueueStorage } from "./queue/queue-db.js";
+export type { StorageProvider } from "./queue/storage-provider.js";
 export type {
   QueuedMutation,
   QueueChange,

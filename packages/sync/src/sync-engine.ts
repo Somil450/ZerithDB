@@ -6,8 +6,8 @@ import { lwwMerge } from "./merge/lww.js";
 import { crdtMerge } from "./merge/crdt.js";
 import { InboxQueue } from "./queue/InboxQueue.js";
 import { OutboxQueue } from "./queue/OutboxQueue.js";
-import { EphemeralStateManager } from "./ephemeral-state.js";
-
+import { createQueueStorage } from "./queue/queue-db.js";
+import { bytesToBase64, base64ToBytes } from "zerithdb-utils";
 
 type SyncEvents = {
   "state:change": SyncState;
@@ -39,9 +39,8 @@ export class SyncEngine extends EventEmitter<SyncEvents> {
     private readonly auth: AuthManager
   ) {
     super();
-    this.ephemeral = new EphemeralStateManager(config, network);
-    this.outbox = new OutboxQueue(config.appId);
-    this.inbox = new InboxQueue(config.appId);
+    this.outbox = new OutboxQueue(createQueueStorage(config.appId, "_zerith_outbox"));
+    this.inbox = new InboxQueue(createQueueStorage(config.appId, "_zerith_inbox"));
     this.onPeerUpdate = this.onPeerUpdate.bind(this);
     this.onLocalMutation = this.onLocalMutation.bind(this);
     this.onPeerConnected = this.onPeerConnected.bind(this);
