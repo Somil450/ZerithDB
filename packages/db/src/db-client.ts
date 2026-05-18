@@ -423,17 +423,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Insert a new document into the collection.
    * Automatically assigns `_id`, `_createdAt`, and `_updatedAt`.
    */
-  async insert(document: T): Promise<InsertResult> {
-    if (document === null || document === undefined) {
-      throw new ZerithDBError(ErrorCode.DB_WRITE_FAILED, "Document cannot be null or undefined");
-    }
-    await this.checkBiometric("Insert Document");
-
-    // Validate before writing — throws ZerithValidationError on failure
-    this.validateData(document, "insert");
+  async insert(document: T & { _id?: string }): Promise<InsertResult> {
     const now = Date.now();
-    const id = uuidv7();
-
+    const id = document._id || uuidv7();
     const doc: Document<T> = {
       ...document,
       _id: id,
