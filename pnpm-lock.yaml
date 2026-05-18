@@ -849,6 +849,28 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
 
+  packages/stego:
+    dependencies:
+      zerithdb-core:
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      rimraf:
+        specifier: ^6.0.1
+        version: 6.1.3
+      tsup:
+        specifier: ^8.2.4
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.14)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.5
+        version: 2.1.9(@types/node@22.19.18)(happy-dom@20.9.0)(lightningcss@1.32.0)
+      zerithdb-tsconfig:
+        specifier: workspace:*
+        version: link:../tsconfig
+
   packages/sync:
     dependencies:
       dexie:
