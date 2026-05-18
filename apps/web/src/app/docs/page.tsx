@@ -247,333 +247,36 @@ const DOC_CONTENT: Record<string, React.ReactNode> = {
       </p>
     </div>
   ),
-  "Real-World Applications": (
-    <div className="space-y-10 text-muted-foreground transition-colors duration-300">
-
-      <div className="space-y-4">
-        <p className="text-lg leading-8 max-w-3xl">
-          ZerithDB enables developers to build local-first, peer-to-peer
-          applications that remain responsive even without internet connectivity.
-          Its CRDT-powered synchronization and offline-first architecture make it
-          suitable for collaborative, real-time, and privacy-focused systems.
-        </p>
-      </div>
-
-      {/* APPLICATIONS */}
-      <div className="space-y-4">
-
-        {/* Collaboration */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-              <MessageSquare className="w-5 h-5 text-blue-500" />
-            </div>
-
-            <div className="min-w-0">
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                Collaborative Applications
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                Build collaborative editors, shared workspaces, whiteboards,
-                and productivity tools with seamless CRDT synchronization.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Collaborative note-taking tools</li>
-                <li>Shared project boards</li>
-                <li>Live document editing</li>
-                <li>Offline-first productivity apps</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* AI */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
-              <Brain className="w-5 h-5 text-purple-500" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                AI & Edge Intelligence
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                Synchronize AI-generated data locally while enabling low-latency,
-                peer-to-peer AI workflows and distributed intelligence systems.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Offline AI copilots</li>
-                <li>Edge ML synchronization</li>
-                <li>Distributed AI agents</li>
-                <li>Local vector search systems</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* E-commerce */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center flex-shrink-0">
-              <ShoppingCart className="w-5 h-5 text-green-500" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                E-Commerce Platforms
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                Deliver fast storefront experiences with local reads,
-                background synchronization, and resilient offline carts.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Offline shopping carts</li>
-                <li>Inventory synchronization</li>
-                <li>Instant product browsing</li>
-                <li>Marketplace synchronization</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center flex-shrink-0">
-              <Smartphone className="w-5 h-5 text-orange-500" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                Offline Mobile Applications
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                Create resilient mobile experiences for low-connectivity
-                environments using ZerithDB’s local-first architecture.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Field workforce systems</li>
-                <li>Travel applications</li>
-                <li>Healthcare platforms</li>
-                <li>Education tools</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* Gaming */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center flex-shrink-0">
-              <Gamepad2 className="w-5 h-5 text-pink-500" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                Multiplayer Gaming
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                Power decentralized multiplayer systems with conflict-free
-                synchronization and real-time peer communication.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Realtime multiplayer games</li>
-                <li>Game state synchronization</li>
-                <li>Peer-hosted lobbies</li>
-                <li>Distributed leaderboards</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* Security */}
-        <div className="border border-border rounded-xl p-5 bg-background transition-colors">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
-              <Shield className="w-5 h-5 text-red-500" />
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">
-                Secure & Private Systems
-              </h3>
-
-              <p className="text-sm leading-7 mb-3">
-                End-to-end encrypted synchronization and decentralized identity
-                management make ZerithDB ideal for privacy-focused systems.
-              </p>
-
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                <li>Secure messaging platforms</li>
-                <li>Encrypted collaboration tools</li>
-                <li>Identity-driven systems</li>
-                <li>Private communication networks</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* ECOSYSTEM */}
-      <div className="pt-4">
-        <h2 className="text-2xl font-semibold text-foreground mb-3">
-          Ecosystem
-        </h2>
-
-        <p className="text-base leading-7 mb-6 max-w-3xl">
-          ZerithDB provides modular packages for building collaborative and
-          offline-first applications across multiple platforms.
-        </p>
-
-        <div className="overflow-x-auto rounded-xl border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40">
-              <tr className="text-left">
-                <th className="px-4 py-3 font-semibold text-foreground">
-                  Package
-                </th>
-
-                <th className="px-4 py-3 font-semibold text-foreground hidden lg:table-cell">
-                  Installation
-                </th>
-
-                <th className="px-4 py-3 font-semibold text-foreground">
-                  Description
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {[
-                ["zerithdb-sdk", "npm install zerithdb-sdk", "Main SDK"],
-                ["zerithdb-db", "npm install zerithdb-db", "IndexedDB adapter"],
-                ["zerithdb-sync", "npm install zerithdb-sync", "CRDT sync engine"],
-                ["zerithdb-network", "npm install zerithdb-network", "WebRTC layer"],
-                ["zerithdb-auth", "npm install zerithdb-auth", "Authentication"],
-                ["zerithdb-core", "npm install zerithdb-core", "Shared utilities"],
-                ["zerithdb-cli", "npm install -g zerithdb-cli", "CLI tooling"],
-                ["zerithdb-react", "npm install zerithdb-react", "React integration"],
-                ["zerithdb-python", "pip install zerithdb-python", "Python SDK"],
-              ].map((pkg, idx) => (
-                <tr
-                  key={idx}
-                  className="border-t border-border"
-                >
-                  <td className="px-4 py-3 font-mono text-blue-500">
-                    {pkg[0]}
-                  </td>
-
-                  <td className="px-4 py-3 font-mono hidden lg:table-cell">
-                    {pkg[1]}
-                  </td>
-
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {pkg[2]}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-    </div>
-  ),
-  Troubleshooting: (
+  "Conflict Resolution": (
     <div className="space-y-6 text-gray-600 leading-relaxed text-lg">
       <p>
-        Because ZerithDB is a local-first application platform operating entirely in the browser, it
-        avoids traditional centralized server bottlenecks by forming a resilient, encrypted mesh
-        network among peers. This decentralized synchronization relies heavily on browser-level
-        WebRTC connections orchestrated initially via a minimal signaling server.
+        ZerithDB ensures all peers eventually converge to the same state using{" "}
+        <strong>Last-Write-Wins (LWW)</strong> and <strong>Causal Ordering</strong> via vector
+        clocks.
       </p>
-      <p>
-        However, real-world network configurations (firewalls, asymmetric NATs, and strict browser
-        sandboxing) can occasionally prevent peers from handshaking or maintaining active data
-        streams. Use this guide to diagnose and resolve common connectivity issues.
-      </p>
-
-      <h3
-        id="webrtc-nat-issue"
-        className="text-2xl font-bold text-gray-900 mt-12 mb-4 scroll-mt-20"
-      >
-        1. Initial Connection Fails Between Peers on Different Networks
-      </h3>
-      <ul className="list-disc pl-6 space-y-3">
-        <li>
-          <strong>Symptom:</strong> Peers on the same Wi-Fi network sync instantly, but a peer on a
-          home network cannot connect to a peer on a corporate network or cellular data.
-        </li>
-        <li>
-          <strong>Cause:</strong> This is typically caused by a NAT (Network Address Translation) or
-          firewall restriction blocking direct P2P socket discovery. While simple STUN mapping
-          handles basic routers, strict enterprise or symmetric NATs hide the internal IP/Port
-          mapping dynamically, preventing direct connections via standard ICE candidates.
-        </li>
-        <li>
-          <strong>Solution:</strong> You need a TURN (Traversal Using Relays around NAT) server to
-          safely fallback and relay encrypted traffic between strict networks. Configure your
-          initialization to supply custom ICE servers:
-        </li>
-      </ul>
-
-      <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm group mt-6">
-        <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-yellow-400"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-green-400"></span>
-            <span className="ml-2 font-medium">app.config.ts</span>
-          </div>
-        </div>
-        <div className="p-6 bg-gray-900 overflow-x-auto">
-          <pre className="text-[13px] font-mono text-gray-300 leading-relaxed">
-            <code>
-              {`import { createApp } from "zerithdb-sdk";
-
-const app = createApp({
-  appId: "my-secure-app",
-  sync: {
-    signalingUrl: "wss://signal.zerithdb.dev",
-    // Supply explicit TURN/STUN configuration for restrictive firewalls
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      {
-        urls: "turn:your-custom-turn-server.com:3478",
-        username: "zerith_user",
-        credential: "secure_password_here"
-      }
-    ]
-  }
-});`}
-            </code>
-          </pre>
-        </div>
+      <h3 className="text-2xl font-bold text-gray-900 mt-12 mb-4">The Resolver Algorithm</h3>
+      <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 font-mono text-sm text-blue-400">
+        {
+          "// Internal resolution logic\nif (incoming.timestamp > local.timestamp) {\n  applyUpdate(incoming);\n} else if (incoming.timestamp === local.timestamp) {\n  // Deterministic tie-break using peer IDs\n  if (incoming.peerId > local.peerId) applyUpdate(incoming);\n}"
+        }
       </div>
-
-      <h3
-        id="connection-drops"
-        className="text-2xl font-bold text-gray-900 mt-12 mb-4 scroll-mt-20"
-      >
-        2. Connection Drops After Inactivity
-      </h3>
       <p>
-        Some aggressive NAT routers close UDP mappings if no data is exchanged for a short period
-        (usually 30-60 seconds). ZerithDB automatically sends keep-alive heartbeats, but you can
-        adjust the interval if you notice frequent reconnections on specific networks.
+        This ensures that no matter what order updates arrive in, every client will compute the
+        exact same final state without needing a central coordinator.
       </p>
+    </div>
+  ),
+  "Client Configuration": (
+    <div className="space-y-6 text-gray-600 leading-relaxed text-lg">
+      <p>
+        The <code>createClient</code> function accepts a configuration object to tune your P2P and
+        storage settings.
+      </p>
+      <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 font-mono text-sm text-gray-300">
+        {
+          "const db = createClient({\n  appId: 'project-xyz',\n  storage: 'indexeddb', // or 'memory'\n  sync: {\n    p2p: true,\n    rtcConfig: { iceServers: [...] }\n  }\n});"
+        }
+      </div>
     </div>
   ),
 };

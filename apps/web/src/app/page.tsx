@@ -39,7 +39,9 @@ const AnimatedDiagram = dynamic(() => import("@/components/AnimatedDiagram"), {
   ),
 });
 import FrameworkSection from "@/components/FrameworkSection";
-import { useState, useEffect } from "react";
+import VisualShowcase from "@/components/VisualShowcase";
+import ProjectShowcase from "@/components/ProjectShowcase";
+import Footer from "@/components/Footer";
 
 const HomePlayground = dynamic(() => import("@/components/HomePlayground"), {
   ssr: false,
@@ -437,7 +439,25 @@ export default function LandingPage() {
         >
           <TerminalShowcase />
         </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 1 }}
+          className="mt-12 flex flex-wrap justify-center gap-8 text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400"
+        >
+          <span className="flex items-center gap-2">
+            Powered by <span className="text-gray-600">Yjs</span>
+          </span>
+          <span className="w-1 h-1 bg-gray-200 rounded-full my-auto" />
+          <span className="text-gray-600">IndexedDB</span>
+          <span className="w-1 h-1 bg-gray-200 rounded-full my-auto" />
+          <span className="text-gray-600">WebRTC</span>
+        </motion.div>
       </section>
+
+      {/* ── VISUAL SHOWCASE ── */}
+      <VisualShowcase />
 
       {/* ── 2. TRUST / SOCIAL PROOF ── */}
       <section className="py-10 border-y border-border bg-muted overflow-hidden transition-colors duration-300">
@@ -840,6 +860,9 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* ── PROJECT SHOWCASE ── */}
+      <ProjectShowcase />
+
       {/* ── 9. CTA SECTION ── */}
       <section
         id="get-started"
@@ -955,6 +978,22 @@ export default function LandingPage() {
             >
               GitHub
             </a>
+            <Link
+              href="/"
+              onClick={() => toast("Blog will be available soon")}
+              className="hover:text-foreground transition-colors cursor-pointer"
+            >
+              Blog
+            </Link>
+            <Link
+              href="/"
+              onClick={() => toast("Pricing will be available soon")}
+              className="hover:text-foreground transition-colors cursor-pointer"
+            >
+              Pricing
+            </Link>
+           
+
             <a
               href="https://discord.gg/MhvuDvzWfF"
               target="_blank"
