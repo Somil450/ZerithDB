@@ -98,6 +98,56 @@ describe("DbClient — CollectionClient", () => {
       const result = await col.find({ x: { $gt: 100 } });
       expect(result).toHaveLength(0);
     });
+
+    it("should support $or operator", async () => {
+      const col = db.collection<{ x: number; y: number }>("logical-or");
+      await col.insertMany([
+        { x: 1, y: 10 },
+        { x: 2, y: 20 },
+        { x: 3, y: 30 },
+      ]);
+      const results = await col.find({
+        $or: [{ x: 1 }, { y: 30 }],
+      } as any);
+      expect(results).toHaveLength(2);
+      expect(results.map((r) => r.x)).toContain(1);
+      expect(results.map((r) => r.x)).toContain(3);
+    });
+
+    it("should support $and operator", async () => {
+      const col = db.collection<{ x: number; y: number }>("logical-and");
+      await col.insertMany([
+        { x: 1, y: 10 },
+        { x: 1, y: 20 },
+        { x: 3, y: 30 },
+      ]);
+      const results = await col.find({
+        $and: [{ x: 1 }, { y: { $gt: 15 } }],
+      } as any);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.y).toBe(20);
+    });
+
+    it("should support $nor operator", async () => {
+      const col = db.collection<{ x: number }>("logical-nor");
+      await col.insertMany([{ x: 1 }, { x: 2 }, { x: 3 }]);
+      const results = await col.find({
+        $nor: [{ x: 1 }, { x: 3 }],
+      } as any);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.x).toBe(2);
+    });
+
+    it("should support $not operator", async () => {
+      const col = db.collection<{ x: number }>("logical-not");
+      await col.insertMany([{ x: 1 }, { x: 2 }, { x: 3 }]);
+      const results = await col.find({
+        $not: { x: { $gt: 2 } },
+      } as any);
+      expect(results).toHaveLength(2);
+      expect(results.map((r) => r.x)).toContain(1);
+      expect(results.map((r) => r.x)).toContain(2);
+    });
   });
 
   describe("findById()", () => {

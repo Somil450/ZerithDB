@@ -20,14 +20,21 @@ export type Document<T extends Record<string, any> = Record<string, any>> = T & 
 export type QueryFilter<T extends Record<string, any>> = {
   [K in keyof T]?:
     | T[K]
-    | { $eq: T[K] }
-    | { $ne: T[K] }
-    | { $gt: T[K] }
-    | { $gte: T[K] }
-    | { $lt: T[K] }
-    | { $lte: T[K] }
-    | { $in: T[K][] }
-    | { $nin: T[K][] };
+    | {
+        $eq?: T[K];
+        $ne?: T[K];
+        $gt?: T[K];
+        $gte?: T[K];
+        $lt?: T[K];
+        $lte?: T[K];
+        $in?: T[K][];
+        $nin?: T[K][];
+      };
+} & {
+  $or?: QueryFilter<T>[];
+  $and?: QueryFilter<T>[];
+  $nor?: QueryFilter<T>[];
+  $not?: QueryFilter<T>;
 };
 
 /** Partial update spec — only specified fields are modified */

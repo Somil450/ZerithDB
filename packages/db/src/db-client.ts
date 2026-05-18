@@ -1,4 +1,4 @@
-import Dexie, { type Table } from "dexie";
+import Dexie, { type Table, liveQuery } from "dexie";
 import { v7 as uuidv7 } from "uuid";
 import type {
   ZerithDBConfig,
@@ -26,6 +26,12 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Automatically assigns `_id`, `_createdAt`, and `_updatedAt`.
    */
   async insert(document: T): Promise<InsertResult> {
+    if (document === null || document === undefined) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Cannot insert a null or undefined document"
+      );
+    }
     const now = Date.now();
     const id = uuidv7();
     const doc: Document<T> = {
@@ -49,6 +55,20 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Insert multiple documents in a single atomic operation.
    */
   async insertMany(documents: T[]): Promise<InsertResult[]> {
+    if (!Array.isArray(documents) || documents.length === 0) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Cannot insert an empty array of documents"
+      );
+    }
+    for (const doc of documents) {
+      if (doc === null || doc === undefined) {
+        throw new ZerithDBError(
+          ErrorCode.DB_WRITE_FAILED,
+          "Cannot insert a list containing null or undefined documents"
+        );
+      }
+    }
     const now = Date.now();
     const docs = documents.map((doc) => ({
       ...doc,
@@ -104,6 +124,33 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
    * Returns the number of updated documents.
    */
   async update(filter: QueryFilter<T>, spec: UpdateSpec<T>): Promise<number> {
+    if (spec === null || spec === undefined) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Cannot update with a null or undefined update spec"
+      );
+    }
+    
+    const hasSet = spec.$set && typeof spec.$set === "object";
+    const hasUnset = spec.$unset && typeof spec.$unset === "object";
+    
+    if (!hasSet && !hasUnset) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Update spec must contain either $set or $unset"
+      );
+    }
+    
+    const setKeys = hasSet ? Object.keys(spec.$set!) : [];
+    const unsetKeys = hasUnset ? Object.keys(spec.$unset!) : [];
+    
+    if (setKeys.length === 0 && unsetKeys.length === 0) {
+      throw new ZerithDBError(
+        ErrorCode.DB_WRITE_FAILED,
+        "Update spec $set or $unset must not be empty"
+      );
+    }
+
     return wrapIDBOperation(
       ErrorCode.DB_WRITE_FAILED,
       `Failed to update documents in "${this.collectionName}"`,
@@ -156,6 +203,20 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     return docs.length;
   }
 
+  /**
+   * Observe changes to the collection reactively.
+   */
+  subscribe(callback: (documents: Document<T>[]) => void): () => void {
+    const observable = liveQuery(() => this.find({}));
+    const subscription = observable.subscribe({
+      next: callback,
+      error: (err) => {
+        console.error(`[CollectionClient] Subscription error in "${this.collectionName}":`, err);
+      },
+    });
+    return () => subscription.unsubscribe();
+  }
+
   private applyUpdateSpec(doc: Document<T>, spec: UpdateSpec<T>, updatedAt: number): Document<T> {
     const next = {
       ...doc,
@@ -176,6 +237,38 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
 
   private matchesFilter(doc: Document<T>, filter: QueryFilter<T>): boolean {
     for (const [key, condition] of Object.entries(filter)) {
+      if (key === "$or") {
+        if (!Array.isArray(condition)) return false;
+        const subFilters = condition as QueryFilter<T>[];
+        if (!subFilters.some((subFilter) => this.matchesFilter(doc, subFilter))) {
+          return false;
+        }
+        continue;
+      }
+      if (key === "$and") {
+        if (!Array.isArray(condition)) return false;
+        const subFilters = condition as QueryFilter<T>[];
+        if (!subFilters.every((subFilter) => this.matchesFilter(doc, subFilter))) {
+          return false;
+        }
+        continue;
+      }
+      if (key === "$nor") {
+        if (!Array.isArray(condition)) return false;
+        const subFilters = condition as QueryFilter<T>[];
+        if (subFilters.some((subFilter) => this.matchesFilter(doc, subFilter))) {
+          return false;
+        }
+        continue;
+      }
+      if (key === "$not") {
+        const subFilter = condition as QueryFilter<T>;
+        if (this.matchesFilter(doc, subFilter)) {
+          return false;
+        }
+        continue;
+      }
+
       const fieldValue = (doc as Record<string, any>)[key];
 
       if (condition === null || typeof condition !== "object") {
@@ -269,6 +362,12 @@ export class DbClient {
   }
 
   collection<T extends Record<string, any>>(name: string): CollectionClient<T> {
+    if (typeof name !== "string" || name.trim() === "") {
+      throw new ZerithDBError(
+        ErrorCode.DB_INIT_FAILED,
+        `Invalid collection name: "${name}"`
+      );
+    }
     if (!this.collections.has(name)) {
       const table = this.dexie.ensureCollection(name);
       this.collections.set(name, new CollectionClient<T>(table as Table<Document<T>>, name));
