@@ -108,6 +108,20 @@ export interface NetworkConfig {
   reconnectDelay?: number;
 }
 
+export interface DbConfig {
+  /**
+   * IPFS RPC URL for uploading blobs.
+   * @default "https://ipfs.infura.io:5001/api/v0"
+   */
+  ipfsRpcUrl?: string;
+
+  /**
+   * IPFS Gateway URL for downloading blobs.
+   * @default "https://ipfs.io/ipfs/"
+   */
+  ipfsGatewayUrl?: string;
+}
+
 export interface ZerithDBConfig {
   /**
    * Unique identifier for this application's data namespace.
@@ -116,6 +130,7 @@ export interface ZerithDBConfig {
    */
   appId: string;
 
+  db?: DbConfig;
   sync?: SyncConfig;
   auth?: AuthConfig;
   network?: NetworkConfig;

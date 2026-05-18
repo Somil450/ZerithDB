@@ -11,106 +11,8 @@ import type {
   UpdateSpec,
   ValidatorRegistry,
 } from "zerithdb-core";
-import { ZerithDBError, ErrorCode, ZerithValidationError } from "zerithdb-core";
-import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
-import { EventEmitter } from "zerithdb-core";
-import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
-import { GraphClient } from "./graph-client.js";
-import type { GraphNode, GraphEdge } from "zerithdb-core";
-/**
- * Minimal interface for an opt-in schema validator (e.g. a Zod schema).
- * Kept loosely typed so `zod` itself is an optional peer dependency.
- */
-export interface ZerithSchema<T> {
-  parse(data: unknown): T;
-}
-
-export type IndexComparator<T> = (a: T, b: T) => number;
-
-export type IndexDefinition<T extends Record<string, any>> = {
-  name: string;
-  field: keyof T;
-  compare?: IndexComparator<T[keyof T]>;
-};
-
-type IndexEntry = { key: unknown; id: DocumentId };
-
-type IndexState<T extends Record<string, any>> = {
-  name: string;
-  field: keyof T;
-  compare: IndexComparator<unknown>;
-  entries: IndexEntry[];
-};
-
-const defaultIndexCompare: IndexComparator<unknown> = (a, b) => {
-  if (a === null || a === undefined) {
-    if (b === null || b === undefined) return 0;
-    return -1;
-  }
-  if (b === null || b === undefined) return 1;
-  if (
-    (typeof a !== "string" && typeof a !== "number") ||
-    (typeof b !== "string" && typeof b !== "number")
-  ) {
-    throw new ZerithDBError(
-      ErrorCode.SDK_INVALID_CONFIG,
-      "Index comparator is required for non-string/number field values."
-    );
-  }
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
-};
-
-const compareEntries = (
-  compare: IndexComparator<unknown>,
-  a: IndexEntry,
-  b: IndexEntry
-): number => {
-  const result = compare(a.key, b.key);
-  if (result !== 0) return result;
-  return a.id.localeCompare(b.id);
-};
-
-type IndexCondition = {
-  op: "$eq" | "$gt" | "$gte" | "$lt" | "$lte";
-  value: unknown;
-};
-
-const lowerBound = (
-  entries: IndexEntry[],
-  key: unknown,
-  compare: IndexComparator<unknown>
-): number => {
-  let lo = 0;
-  let hi = entries.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (compare(entries[mid]?.key, key) < 0) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
-};
-
-const upperBound = (
-  entries: IndexEntry[],
-  key: unknown,
-  compare: IndexComparator<unknown>
-): number => {
-  let lo = 0;
-  let hi = entries.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (compare(entries[mid]?.key, key) <= 0) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
-};
+import { ZerithDBError, ErrorCode } from "zerithdb-core";
+import { BlobManager } from "./blob-manager.js";
 
 /**
  * A handle to a single named collection within the ZerithDB local database.
@@ -121,8 +23,9 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
   private readonly docIndexKeys = new Map<DocumentId, Map<string, unknown>>();
 
   constructor(
-    private table: Table<Document<T>>,
-    private readonly collectionName: string
+    private readonly table: Table<Document<T>>,
+    private readonly collectionName: string,
+    private readonly blobManager: BlobManager
   ) {}
 
   private async checkBiometric(operationDescription: string): Promise<void> {
@@ -641,11 +544,22 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
     }
   }
 
-  private matchesFilter(
-    doc: Document<T>,
-    filter: QueryFilter<T>,
-    comparators?: Map<string, IndexComparator<unknown>>
-  ): boolean {
+  /**
+   * Upload a large binary object (Blob or Uint8Array) to IPFS.
+   * Returns a Content Identifier (CID).
+   */
+  async putBlob(data: Blob | Uint8Array): Promise<string> {
+    return this.blobManager.upload(data);
+  }
+
+  /**
+   * Download a blob from IPFS by its CID.
+   */
+  async getBlob(cid: string): Promise<Blob> {
+    return this.blobManager.download(cid);
+  }
+
+  private matchesFilter(doc: Document<T>, filter: QueryFilter<T>): boolean {
     for (const [key, condition] of Object.entries(filter)) {
       const fieldValue = (doc as Record<string, any>)[key];
       const comparator = comparators?.get(key);
@@ -749,31 +663,22 @@ class ZerithDBDexie extends Dexie {
 
 export class DbClient {
   private readonly dexie: ZerithDBDexie;
-  private readonly appId: string;
+  private readonly blobManager: BlobManager;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly collections = new Map<string, CollectionClient<any>>();
 
-  /**
-   * Internal Dexie table accessor
-   */
-  private get table(): Table<Document<T>> {
-    return this.dexie.table(this.collectionName);
+  constructor(config: ZerithDBConfig) {
+    this.dexie = new ZerithDBDexie(config.appId);
+    this.blobManager = new BlobManager(config.db);
   }
 
   collection<T extends Record<string, any>>(name: string): CollectionClient<T> {
     if (!this.collections.has(name)) {
-      this.dexie.ensureCollection(name);
-      const table = this.dexie.table(name);
-      this.collections.set(name, new CollectionClient<T>(table as Table<Document<T>>, name));
-      this.refreshCollectionTables();
-    }
-
-    return this.collections.get(name)!;
-  }
-
-  private refreshCollectionTables(): void {
-    for (const [collectionName, collection] of this.collections.entries()) {
-      collection.setTable(this.dexie.table(collectionName));
+      const table = this.dexie.ensureCollection(name);
+      this.collections.set(
+        name,
+        new CollectionClient<T>(table as Table<Document<T>>, name, this.blobManager)
+      );
     }
   }
 
