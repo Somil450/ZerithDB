@@ -20,6 +20,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
 import Image from "next/image";
+import ComparisonSection from "@/components/ComparisonSection";
 
 const CodeWalkthrough = dynamic(() => import("@/components/CodeWalkthrough"), {
   loading: () => (
@@ -761,87 +762,8 @@ export default function LandingPage() {
           </motion.div>
         </div>
       </section>
-
-      <section id="compare" className="py-24 px-6 bg-background transition-colors duration-300">
-        <div className="max-w-5xl mx-auto">
-          <motion.div {...fadeInUp} className="text-center mb-16">
-            <h2 className="text-3xl font-bold tracking-tight text-foreground transition-colors duration-300">
-              The Modern Data Layer
-            </h2>
-            <p className="mt-4 text-muted-foreground text-lg">
-              See how ZerithDB compares to traditional architectures.
-            </p>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.8 }}
-            className="overflow-x-auto rounded-2xl border border-border shadow-sm transition-colors duration-300 dark:bg-card"
-          >
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-muted text-foreground border-b border-border">
-                  <th className="py-4 px-6 font-semibold w-1/4">Feature</th>
-                  <th className="py-4 px-6 font-semibold w-1/4">Firebase</th>
-                  <th className="py-4 px-6 font-semibold w-1/4">Supabase</th>
-                  <th className="py-4 px-6 font-bold text-blue-600 dark:text-blue-300 bg-blue-50/50 dark:bg-blue-950/20 w-1/4 transition-colors duration-300">
-                    ZerithDB
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="text-sm">
-                {[
-                  {
-                    feature: "Backend Required",
-                    fb: "Yes (Managed)",
-                    sb: "Yes (Managed)",
-                    zdb: "No (Browser-only)",
-                  },
-                  {
-                    feature: "Offline-First",
-                    fb: "Limited / Add-on",
-                    sb: "Via external libs",
-                    zdb: "Native Default",
-                  },
-                  {
-                    feature: "Sync Architecture",
-                    fb: "Client-Server",
-                    sb: "Client-Server",
-                    zdb: "Peer-to-Peer",
-                  },
-                  {
-                    feature: "Conflict Resolution",
-                    fb: "Last-write-wins",
-                    sb: "PostgreSQL rules",
-                    zdb: "CRDTs (Deterministic)",
-                  },
-                  {
-                    feature: "Vendor Lock-in",
-                    fb: "High",
-                    sb: "Low (Open Source)",
-                    zdb: "None (Runs in client)",
-                  },
-                ].map((row, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-border hover:bg-muted/50 transition-colors bg-background"
-                  >
-                    <td className="py-4 px-6 text-foreground font-medium">{row.feature}</td>
-                    <td className="py-4 px-6 text-muted-foreground">{row.fb}</td>
-                    <td className="py-4 px-6 text-muted-foreground">{row.sb}</td>
-                    <td className="py-4 px-6 text-foreground font-semibold bg-blue-50/30">
-                      {row.zdb}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </motion.div>
-        </div>
-      </section>
-
+{/* ── 6. COMPARISON TABLE ── */}
+      <ComparisonSection />
       {/* ── 7. USE CASES ── */}
       <section
         id="use-cases"
