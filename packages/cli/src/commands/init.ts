@@ -104,10 +104,9 @@ export async function initCommand(
 
     try {
       await execa("npm", ["install"], { cwd: targetDir });
-
-      installSpinner.succeed("Dependencies installed successfully");
+      installSpinner.succeed(chalk.green("Dependencies installed"));
     } catch {
-      installSpinner.warn("Dependency installation failed. Please run `npm install` manually.");
+      installSpinner.warn(chalk.yellow("Failed to install dependencies. Run `npm install` manually."));
     }
   }
 
